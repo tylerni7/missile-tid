@@ -9,8 +9,7 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.basemap import Basemap
 import numpy
 import os
-from scipy import signal
-from scipy.signal import butter, lfilter
+from scipy.signal import butter, lfilter, filtfilt, sosfiltfilt
 
 
 import tec
@@ -24,24 +23,32 @@ globe = Basemap(projection='mill',lon_0=180)
 
 print("loading data...")
 stations = [
+    'napl', 'wach', 'bkvl', 'zefr', 'pbch', 'flwe', 'ormd', 'flbn', 'pcla'
+]
+"""
     'flwe', 'ormd', 'dlnd', 'okcb', 'pcla', 'mmd1', 'bmpd', 'okte', 'blom',
     'utmn', 'nvlm', 'p345', 'slac', 'ndst', 'pamm', 'njmt', 'kybo', 'mtlw',
     'scsr', 'cofc', 'nmsu', 'azmp', 'wask', 'dunn', 'zjx1', 'talh', 'gaay',
     'ztl4', 'aldo', 'fmyr', 'pcla', 'crst', 'altu', 'mmd1', 'prjc', 'msin',
     'cola', 'alla', 'mspe', 'tn22', 'tn18', 'wvat', 'ines', 'freo', 'hnpt',
-    'flbn', 'scfj', 'ncbx', 'ncdu'
+    'flbn', 'ncbx', 'ncdu', 'pbch', 'napl'
 ]
+"""
 station_poss = []
 meas_datas = []
-for station in stations:
+
+def add_station(station):
     try:
-        #station_pos, meas_data = get_data.data_for_station(dog, station, date=datetime(2019, 12, 17))
-        station_pos, meas_data = get_data.data_for_station(dog, station, date=datetime(2020, 2, 17))
+        station_pos, meas_data = get_data.data_for_station(dog, station, date=datetime(2019, 12, 17))
+        #station_pos, meas_data = get_data.data_for_station(dog, station, date=datetime(2020, 2, 17))
         #station_pos, meas_data = get_data.data_for_station(dog, station, date=datetime(2018, 2, 6))
         station_poss.append(station_pos)
         meas_datas.append(meas_data)
     except (ValueError, rinex_file.DownloadError):
         print("*** error with station " + station)
+
+for station in stations:
+    add_station(station)
 
 print("doing calcs...")
 
@@ -81,48 +88,82 @@ for i in range(2880):
 
     xs, ys = globe(lons, lats)
     ticks.append( (xs, ys, vals) )
-    #numpy.array(vals)/400 + 0.5) )
 
 epsilon = 0.4
 min_tec = numpy.quantile([x for x in all_values if not math.isnan(x)], 0.5 - epsilon)
 max_tec = numpy.quantile([x for x in all_values if not math.isnan(x)], 0.5 + epsilon)
 
 smoothed = dict()
-pattern = numpy.ones(5)/5
+pattern = numpy.ones(7)/7
 for name, connection in connections.items():
     smoothed[name] = numpy.convolve(connection, pattern, 'same')
     # ignore the ends
-    smoothed[name][:len(pattern)] = math.nan
-    smoothed[name][-len(pattern):] = math.nan
+    smoothed[name][:len(pattern)] = 0
+    smoothed[name][-len(pattern):] = 0
 
 # https://stackoverflow.com/questions/12093594/how-to-implement-band-pass-butterworth-filter-with-scipy-signal-butter
-def butter_bandpass(lowcut, highcut, fs, order=5):
+def butter_bandpass(lowcut, highcut, fs, order=2):
     nyq = 0.5 * fs
     low = lowcut / nyq
     high = highcut / nyq
-    b, a = butter(order, [low, high], btype='band')
-    return b, a
+    return butter(order, [low, high], btype='band')
 
 
-def butter_bandpass_filter(data, lowcut, highcut, fs, order=5):
-    b, a = butter_bandpass(lowcut, highcut, fs, order=order)
-    y = lfilter(b, a, data)
-    return y
+def butter_bandpass_filter(data, lowcut, highcut, fs, order=4):
+    a, b = butter_bandpass(lowcut, highcut, fs, order=order)
+#    y = lfilter(b, a, data)
+    if len(data) < 27:
+        return [math.nan] * len(data)
+    return filtfilt(a, b, data)
 
 
 filtered = dict()
-b, a = signal.butter(5, .1, btype='high', analog='false')
 for name, connection in connections.items():
-    filtered[name] = butter_bandpass_filter(connection, 1/(10*60), 1/(4*60), 0.5)
+    filtered[name] = butter_bandpass_filter(connection, 1/(12*60), 1/(2*60), 1/30)
 
-
-print("max/min = %f/%f" % (max_tec, min_tec))
-
-print("plotting...")
+def get_connection_info(station, sv):
+    res = []
+    idx = stations.index(station)
+    for i, dat in enumerate(meas_datas[idx]):
+        for sv_dat in dat:
+            if sv_dat.prn == sv:
+                res.append(sv_dat)
+                break
+        else:
+            res.append(None)
+    return res
 
 stuff = defaultdict(list)
 
-def plot():
+def easyplot(data):
+    fig, ax = plt.subplots()
+    ax.plot(data)
+    fig.show()
+
+def easyplot_day(data):
+    fig, ax = plt.subplots()
+    ax.plot(range(2880), data)
+    fig.show()
+
+def plot_florida():
+    florida = {'brtw', 'dlnd', 'flcb', 'flwe', 'okcb', 'ormd', 'pltk', 'zjx1', 'napl', 'pbch'}
+    colors = {'okcb': 'orange', 'zjx1': 'black', 'dlnd': 'blue', 'ormd': 'green', 'flwe': 'pink', 'napl': 'yellow', 'pbch': 'red'}
+
+    fig, ax = plt.subplots()
+    added = set()
+    for i in range(len(ticks)):
+        for entry in ticks[i][2]:
+            if entry[1] in added:
+                continue
+            name = entry[1][:4]
+            if name in florida:
+                ax.plot(range(i, i+len(filtered[entry[1]])), filtered[entry[1]], label=entry[1], color=colors[name])
+            added.add(entry[1])
+    #h, l = ax.get_legend_handles_labels()
+    ax.legend(h, l)
+    fig.show()
+
+def plot_map():
     globe = Basemap(projection='mill',lon_0=180)
     # plot coastlines, draw label meridians and parallels.
     globe.drawcoastlines()
