@@ -8,10 +8,11 @@ from laika.dgps import get_station_position
 import laika.raw_gnss as raw
 
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from scipy.signal import butter, lfilter, filtfilt, sosfiltfilt
 import math
 import numpy
+import pickle
 
 
 # one day worth of samples every 30 seconds
@@ -50,6 +51,34 @@ def station_transform(station_data, start_dict=None, offset=0):
                 ret[sample.prn][i + offset] = sample
     
     return ret
+
+def populate_data(dog, start_date, duration, stations):
+    for station in stations:
+        print(station)
+        cache_name = "cached/stationdat_%s_%s_to_%s" % (
+            station,
+            start_date.strftime("%Y-%m-%d"),
+            (start_date + duration).strftime("%Y-%m-%d")
+        )
+        if os.path.exists(cache_name):
+
+
+        station_data[station] = defaultdict(lambda : defaultdict(lambda : None))
+        date = start_date
+        while date <= start_date + duration:
+            try:
+
+                loc, data = get_data.data_for_station(dog, station, date)
+                station_data[station] = get_data.station_transform(
+                                            data,
+                                            start_dict=station_data[station],
+                                            offset=int((date - start_date).total_seconds()/30)
+                                        )
+                station_locs[station] = loc
+            except (ValueError, rinex_file.DownloadError):
+                print("*** error with station " + station)
+            date += timedelta(days=1)
+    return station_locs, station_data
 
 
 # https://stackoverflow.com/questions/12093594/how-to-implement-band-pass-butterworth-filter-with-scipy-signal-butter
@@ -92,13 +121,13 @@ def get_contiguous(data, min_length=28):
         i += 1
     return runs
 
-def filter_contiguous(data, short_min=2, long_min=12):
+def filter_contiguous(data, short_min=2, long_min=12, expected_len=default_len):
     chunked = get_contiguous(data)
     filtered_chunks = []
     for idx, chunk in chunked:
         filtered_dat = bpfilter(chunk, short_min=short_min, long_min=long_min)
         filtered_chunks.append( (idx, filtered_dat) )
-    return reassemble_chunks(filtered_chunks)
+    return reassemble_chunks(filtered_chunks, expected_len=expected_len)
 
 def remove_slips(data_stream, slip_value=3):
     for i in range(1, len(data_stream)):
@@ -163,10 +192,10 @@ def get_depletion(signal):
     return get_brc(signal) - signal
 
 
-def depletion_contiguous(data):
+def depletion_contiguous(data, expected_len=default_len):
     chunked = get_contiguous(data)
     filtered_chunks = []
     for idx, chunk in chunked:
         filtered_dat = get_depletion(chunk)
         filtered_chunks.append( (idx, filtered_dat) )
-    return reassemble_chunks(filtered_chunks)
+    return reassemble_chunks(filtered_chunks, expected_len=expected_len)

@@ -8,7 +8,7 @@ import math
 
 from laika import constants, helpers
 
-K = 40.308e16
+K = 40.308
 m_to_TEC = 6.158
 # set ionosphere puncture to 350km
 IONOSPHERE_H = constants.EARTH_RADIUS + 350000
@@ -16,13 +16,21 @@ IONOSPHERE_H = constants.EARTH_RADIUS + 350000
 IONOSPHERE_MAX_D = constants.EARTH_RADIUS + 350000
 C = constants.SPEED_OF_LIGHT
 
+# TODO: glonass if FDMA, so this doesn't work :/
+#  and galileo is more complicated and needs l5a and l5b
+#  so ignore this for anything but GPS...
 F_lookup = {
     'R':(constants.GLONASS_L1, constants.GLONASS_L2),
     'G':(constants.GPS_L1, constants.GPS_L2),
     'E':(constants.l1, constants.l5)
 }
 
-def calc_vtec(dog, rec_pos, measurement, ionh=IONOSPHERE_H, el_cut=0.40):
+def correct_tec(tec_entry, rcvr_bias=0, sat_bias=0):
+    location, vtecish, s_to_v = tec_entry
+    stec = vtecish / s_to_v  + 0.64694 * K * (sat_bias - rcvr_bias)
+    return location, stec * s_to_v, s_to_v
+
+def calc_vtec(dog, rec_pos, measurement, ionh=IONOSPHERE_H, el_cut=0.30, n1=0, n2=0, rcvr_bias=0, sat_bias=0):
     """
     Given a receiver position and measurement from a specific sv
     this calculates the vertical TEC, and the point at which
@@ -30,12 +38,19 @@ def calc_vtec(dog, rec_pos, measurement, ionh=IONOSPHERE_H, el_cut=0.40):
     """
     if measurement is None:
         return None
-    stec = calc_tec(measurement)
+    stec = calc_tec( 
+        measurement,
+        n1=n1, n2=n2, 
+        rcvr_bias=rcvr_bias, 
+        sat_bias=sat_bias
+    )
     if stec is None:
         return None
     if math.isnan(stec):
         return None
-    measurement.process(dog)
+
+    if not measurement.processed:
+        measurement.process(dog)
     el, az = helpers.get_el_az(rec_pos, measurement.sat_pos)
     # ignore things too low in the sky
     if el < el_cut or math.isnan(el):
@@ -44,15 +59,11 @@ def calc_vtec(dog, rec_pos, measurement, ionh=IONOSPHERE_H, el_cut=0.40):
     return stec * s_to_v, ion_loc(rec_pos, measurement.sat_pos), s_to_v
 
 def s_to_v_factor(el, ionh=IONOSPHERE_H):
-    # TODO : THIS ONLY WORKS IF TEC IS POSITIVE!!!!!
-#    return el
-#    return 1
+    return math.sqrt(1 - (math.cos(el) * constants.EARTH_RADIUS / IONOSPHERE_MAX_D) ** 2)
+
+def s_to_v_factor3(el, ionh=IONOSPHERE_H):
     zenith = math.asin(constants.EARTH_RADIUS * math.sin(math.pi/2 + el) / IONOSPHERE_MAX_D)
-    a = 0.9782  # constant magic number
-#    return 1/(1 + 2*((0.10472+zenith)/1.5708)**3)
-#    return 1/math.cos(zenith)**0.4
-#    return 1/math.cos(math.asin(math.sin(zenith) * constants.EARTH_RADIUS/IONOSPHERE_MAX_D ))
-    return math.sqrt(1 - (constants.EARTH_RADIUS * math.sin(a * zenith) / (IONOSPHERE_MAX_D)) ** 2)
+    return math.cos(zenith)
 
 def ion_loc(rec_pos, sat_pos):
     """
@@ -76,10 +87,9 @@ def ion_loc(rec_pos, sat_pos):
     else:
         return res1
 
-def calc_tec_real(measurement):
+def calc_carrier_delay(measurement, n1=0, n2=0, rcvr_bias=0, sat_bias=0):
     """
-    Calculates the slant TEC for a set of observable
-    or None if we are missing required observable
+    calculates the carrier phase delay associated with a measurement
     """
     if measurement is None:
         return None
@@ -101,66 +111,33 @@ def calc_tec_real(measurement):
         # missing info: can't do the calculation
         return None
 
-    delay_factor = freqs[1]**2/(freqs[0]**2 - freqs[1]**2)
+    delay_factor = freqs[0]**2 / freqs[1]**2 - 1    # freqs[1]**2/(freqs[0]**2 - freqs[1]**2)
 
     phase_diff_meters = C * (
-        observable[band_1]/freqs[0] - observable[band_2]/freqs[1]
+        (observable[band_1] - n1)/freqs[0] - (observable[band_2] - n2)/freqs[1]
     )
-    return phase_diff_meters * m_to_TEC * delay_factor
+    return phase_diff_meters + sat_bias - rcvr_bias, delay_factor
 
-def calc_tec(measurement):
+
+def calc_tec(measurement, n1=0, n2=0, rcvr_bias=0, sat_bias=0):
     """
     Calculates the slant TEC for a set of observable
     or None if we are missing required observable
     """
     if measurement is None:
         return None
-    observable = measurement.observables
-    band = measurement.prn[0]  # GPS/GLONASS/GALILEO
-    freqs = F_lookup[measurement.prn[0]]
-
-    band_1 = 'C1C'
-    if measurement.prn[0] == 'E':
-        band_2 = 'L5C'
-    else:
-        band_2 = 'C2C'
     
-
-    if (
-        math.isnan(observable.get(band_1, math.nan))
-        or math.isnan(observable.get(band_2, math.nan))
-    ):
-        # missing info: can't do the calculation
+    res = calc_carrier_delay(
+        measurement,
+        n1=n1, n2=n2, 
+        rcvr_bias=rcvr_bias, 
+        sat_bias=sat_bias
+    )
+    if res is None:
         return None
 
-    delay_factor = freqs[1]**2/(freqs[0]**2 - freqs[1]**2)
-
-    phase_diff_meters = C * (
-        observable[band_1]/freqs[0] - observable[band_2]/freqs[1]
-    )
-    range_diff = m_to_TEC * delay_factor * (observable['C2C'] - observable['C1C'])
-    return range_diff * m_to_TEC * delay_factor
-
-def _calc_tec(measurement):
-    """
-    Calculates the slant TEC for a set of observable
-    or None if we are missing required observable
-    """
-    observable = measurement.observables
-    band = measurement.prn[0]  # GPS/GLONASS/GALILEO
-    freqs = F_lookup[measurement.prn[0]]
-    
-    needed = ('L1C', 'L2C', 'C1C', 'C2C')
-    for obs in needed:
-        if math.isnan(observable.get(obs, math.nan)):
-            # missing info: can't do the calculation
-            return None
-    
-    delay_factor = freqs[1]**2/(freqs[0]**2 - freqs[1]**2)
-
-    #range_diff = m_to_TEC * delay_factor * (observable['C2C'] - observable['C1C'])
-    phase_diff = m_to_TEC * delay_factor * C * (observable['L2C']/freqs[1] - observable['L1C']/freqs[0])
-    return phase_diff
+    phase_diff, delay_factor = res
+    return phase_diff * K * delay_factor
 
 def melbourne_wubbena(measurement):
     """
@@ -169,10 +146,78 @@ def melbourne_wubbena(measurement):
     GLONASS is different though... and this doesn't work so well
     """
     if measurement is None:
-        return math.nan
+        return None
     observable = measurement.observables
-    chan2 = 'C2P' if not math.isnan(observable['C2P']) else 'C2C'
+    chan2 = 'C2C' if not math.isnan(observable.get('C2C', math.nan)) else 'C2P'
     freqs = F_lookup[measurement.prn[0]]
     phase = C/(freqs[0] - freqs[1])*(observable['L1C'] - observable['L2C'])
     pseudorange = 1/(freqs[0] + freqs[1])*(freqs[0]*observable['C1C'] + freqs[1]*observable[chan2])
-    return phase - pseudorange
+    wavelength = C/(freqs[0] - freqs[1])
+    return phase - pseudorange, wavelength
+
+def wide_lane(measurement):
+    """
+    Wide lane measurement: acts as measurement with wider wavelength
+    used for ambiguity correction
+    """
+    if measurement is None:
+        return None
+    observable = measurement.observables
+    chan2 = 'C2C' if not math.isnan(observable.get('C2C', math.nan)) else 'C2P'
+    freqs = F_lookup[measurement.prn[0]]
+
+    phase = C/(freqs[0] - freqs[1])*(observable['L1C'] - observable['L2C'])
+    pseudorange = 1/(freqs[0] - freqs[1])*(freqs[0]*observable['C1C'] - freqs[1]*observable[chan2])
+    wavelength = C/(freqs[0] - freqs[1])
+    return phase, pseudorange, wavelength
+
+def narrow_lane(measurement):
+    """
+    Narrow lane measurement: acts as measurement with narrower wavelength
+    used for ambiguity correction
+    """
+    if measurement is None:
+        return None
+    observable = measurement.observables
+    chan2 = 'C2C' if not math.isnan(observable.get('C2C', math.nan)) else 'C2P'
+    freqs = F_lookup[measurement.prn[0]]
+
+    phase = C/(freqs[0] + freqs[1])*(observable['L1C'] + observable['L2C'])
+    pseudorange = 1/(freqs[0] + freqs[1])*(freqs[0]*observable['C1C'] + freqs[1]*observable[chan2])
+    wavelength = C/(freqs[0] + freqs[1])
+    return phase, pseudorange, wavelength
+
+def ionosphere_free(measurement):
+    """
+    ionosphere free signal combination
+    """
+    if measurement is None:
+        return None
+    observable = measurement.observables
+    chan2 = 'C2C' if not math.isnan(observable.get('C2C', math.nan)) else 'C2P'
+    freqs = F_lookup[measurement.prn[0]]
+
+    phase = C/(freqs[0]**2 + freqs[1]**2)*(observable['L1C']*freqs[0] + observable['L2C']*freqs[1])
+    pseudorange = 1/(freqs[0]**2 + freqs[1]**2)*(freqs[0]**2*observable['C1C'] + freqs[1]**2*observable[chan2])
+    wavelength = C/(freqs[0] + freqs[1])  # same as narrow lane combination
+    return phase, pseudorange, wavelength
+
+def geometry_free(measurement):
+    """
+    geometry free (ionosphere) signal combination
+    """
+    if measurement is None:
+        return None
+    observable = measurement.observables
+    chan2 = 'C2C' if not math.isnan(observable.get('C2C', math.nan)) else 'C2P'
+    freqs = F_lookup[measurement.prn[0]]
+
+    phase = C*(observable['L1C']/freqs[0] - observable['L2C']/freqs[1])
+    # yes, pseudorange is flipped intentionally
+    pseudorange = observable[chan2] - observable['C1C']
+    return phase, pseudorange
+
+
+# TODO: testing kludge
+xs = [s_to_v_factor(i/100) for i in range(2000)]
+ys = [s_to_v_factor2(i/100) for i in range(2000)]

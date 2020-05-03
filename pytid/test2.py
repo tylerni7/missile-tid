@@ -79,6 +79,12 @@ def vtec_for(station, prn):
         station_vtecs[station][prn] = (locs, dats, slants)
     return station_vtecs[station][prn]
 
+def sats_in_view(station, tick):
+    return [prn for prn, vals in station_data[station].items() if vals[tick] is not None]
+
+def stations_viewing(prn, tick):
+    return [station for station, vals in station_data.items() if vals[prn][tick] is not None]
+
 def get_bpfilt_for(station, prn, short_min=2, long_min=12):
     locs, dats, _ = vtec_for(station, prn)
     get_data.remove_slips(dats)
