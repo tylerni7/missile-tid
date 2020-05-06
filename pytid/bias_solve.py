@@ -25,8 +25,10 @@ import numpy
 
 from tec import K, F_lookup
 
-lat_lon_res = 0.5  # 0.2 degrees
-time_res = 60*60   # 20 minutes
+#lat_lon_res = 0.5  # 0.5 degrees
+lat_res = 2.5
+lon_res = 5.0
+time_res = 60*15   # 30 minutes
 
 
 class Observation:
@@ -79,12 +81,12 @@ def opt_solve(coincidences, measurements, svs, recvs):
 
     for i, measurement in enumerate(measurements):
         freqs = F_lookup[measurement.sat[0]]
-        delay_factor = freqs[0]**2 / freqs[1]**2 - 1
+        delay_factor = freqs[0]**2 * freqs[1]**2/(freqs[0]**2 - freqs[1]**2)
 
         A[i, error(i)] = 1
         # sat biases have opposite sign by convention...
-        A[i, sat_bias(measurement.sat)] = -delay_factor * K
-        A[i, recv_bias(measurement.station)] = delay_factor * K
+        A[i, sat_bias(measurement.sat)] = -delay_factor / K
+        A[i, recv_bias(measurement.station)] = delay_factor / K
         A[i, coincidence_idx(measurement.coi)] = 1 / measurement.slant
 
         b[i] = measurement.tec / measurement.slant
@@ -136,7 +138,7 @@ def gather_data(station_vtecs):
                     if j >= len(locs) or locs[j] is None:
                         continue
                     lat, lon, _ = ecef2geodetic(locs[j])
-                    coi = (round_to_res(lat, lat_lon_res), round_to_res(lon, lat_lon_res), i)
+                    coi = (round_to_res(lat, lat_res), round_to_res(lon, lon_res), i)
                     # only log unique COIs
                     if coi in cois:
                         continue

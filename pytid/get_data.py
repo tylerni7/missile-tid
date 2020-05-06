@@ -1,19 +1,25 @@
-# get observables at particular location (CORS station) at a particular time
-
-from laika import AstroDog
-from laika.gps_time import GPSTime
-from laika.downloader import download_cors_station
-from laika.rinex_file import RINEXFile
-from laika.dgps import get_station_position
-import laika.raw_gnss as raw
-
+"""
+this file handles basic data gathering and filtering
+so basically convenience functions around calculations to give
+nice usable datastructures
+"""
 from collections import defaultdict
+import copy
 from datetime import datetime, timedelta
 from scipy.signal import butter, lfilter, filtfilt, sosfiltfilt
 import math
 import numpy
+import os
 import pickle
 
+from laika import AstroDog
+from laika.gps_time import GPSTime
+from laika.downloader import download_cors_station
+from laika.rinex_file import RINEXFile, DownloadError
+from laika.dgps import get_station_position
+import laika.raw_gnss as raw
+
+import tec
 
 # one day worth of samples every 30 seconds
 default_len = int(24*60/0.5)
@@ -39,8 +45,9 @@ def data_for_station(dog, station_name, date=None):
 # from
 # receiver -> tick -> measurement
 def station_transform(station_data, start_dict=None, offset=0):
+    # TODO GPS only
     if start_dict is None:
-        ret = defaultdict(lambda : defaultdict(lambda : None))
+        ret = {'G%02d' % i: defaultdict() for i in range(1, 33)}
     else:
         ret = start_dict
 
@@ -52,7 +59,12 @@ def station_transform(station_data, start_dict=None, offset=0):
     
     return ret
 
+def empty_factory():
+    return None
+
 def populate_data(dog, start_date, duration, stations):
+    station_locs = {}
+    station_data = {}
     for station in stations:
         print(station)
         cache_name = "cached/stationdat_%s_%s_to_%s" % (
@@ -61,24 +73,120 @@ def populate_data(dog, start_date, duration, stations):
             (start_date + duration).strftime("%Y-%m-%d")
         )
         if os.path.exists(cache_name):
+            station_data[station] = pickle.load(open(cache_name, "rb"))
+            station_locs[station] = get_station_position(station)
+            continue
 
-
-        station_data[station] = defaultdict(lambda : defaultdict(lambda : None))
+        station_data[station] = {'G%02d' % i: defaultdict(empty_factory) for i in range(1, 33)}
         date = start_date
         while date <= start_date + duration:
             try:
 
-                loc, data = get_data.data_for_station(dog, station, date)
-                station_data[station] = get_data.station_transform(
+                loc, data = data_for_station(dog, station, date)
+                station_data[station] = station_transform(
                                             data,
                                             start_dict=station_data[station],
                                             offset=int((date - start_date).total_seconds()/30)
                                         )
                 station_locs[station] = loc
-            except (ValueError, rinex_file.DownloadError):
+            except (ValueError, DownloadError):
                 print("*** error with station " + station)
             date += timedelta(days=1)
+        pickle.dump(station_data[station], open(cache_name, "wb"))
     return station_locs, station_data
+
+
+def get_vtec_data(dog, station_locs, station_data, conn_map=None, biases=None):
+    station_vtecs = defaultdict(dict)
+    def vtec_for(station, prn, conns=None, biases=None):
+        if biases:
+            station_bias = biases.get(station, 0)
+            sat_bias = biases.get(prn, 0)
+        else:
+            station_bias, sat_bias = 0, 0
+
+        if prn not in station_vtecs[station]:
+            dats = []
+            locs = []
+            slants = []
+            if station_data[station][prn]:
+                end = max(station_data[station][prn].keys())
+            else:
+                end = 0
+            for i in range(end):
+                measurement = station_data[station][prn][i]
+                # if conns specified, require ambiguity data
+                if conns:
+                    if measurement and conns[i] and conns[i].n1: # and numpy.std(conns[i].n1s) < 3:
+                        res = tec.calc_vtec(
+                            dog,
+                            station_locs[station],
+                            station_data[station][prn][i],
+                            n1=conns[i].n1,
+                            n2=conns[i].n2,
+                            rcvr_bias=station_bias,
+                            sat_bias=sat_bias,
+                        )
+                        if res is None:
+                            locs.append(None)
+                            dats.append(math.nan)
+                            slants.append(math.nan)
+                        else:
+                            dats.append(res[0])
+                            locs.append(res[1])
+                            slants.append(res[2])
+                    else:
+                        locs.append(None)
+                        dats.append(math.nan)
+                        slants.append(math.nan)
+
+                elif measurement:
+                    res = tec.calc_vtec(dog, station_locs[station], station_data[station][prn][i])
+                    if res is None:
+                        locs.append(None)
+                        dats.append(math.nan)
+                        slants.append(math.nan)
+                    else:
+                        dats.append(res[0])
+                        locs.append(res[1])
+                        slants.append(res[2])
+                else:
+                    locs.append(None)
+                    dats.append(math.nan)
+                    slants.append(math.nan)
+            
+            station_vtecs[station][prn] = (locs, dats, slants)
+        return station_vtecs[station][prn]
+
+    for station in station_data.keys():
+        print(station)
+        for recv in ['G%02d' % i for i in range(1, 33)]:
+            if conn_map:
+                vtec_for(station, recv, conns=conn_map[station][recv], biases=biases)
+            else:
+                vtec_for(station, recv, biases=biases)
+    return station_vtecs
+
+def correct_vtec_data(vtecs, sat_biases, station_biases):
+    corrected = copy.deepcopy(vtecs)
+    bad_stations = []
+    for station in corrected:
+        if station not in station_biases:
+            bad_stations.append(station)
+            continue
+        for prn in ['G%02d' % i for i in range(1, 33)]:
+            if prn not in corrected[station]:
+                continue
+            for i in range(len(corrected[station][prn][0])):
+                dat = corrected[station][prn][0][i], corrected[station][prn][1][i], corrected[station][prn][2][i]
+                if dat[0] is None:
+                    continue
+                dat = tec.correct_tec(dat, rcvr_bias=station_biases[station], sat_bias=sat_biases[prn])
+                corrected[station][prn][0][i], corrected[station][prn][1][i], corrected[station][prn][2][i] = dat
+    for station in bad_stations:
+        print("missing bias data for %s: deleting vtecs" % station)
+        del corrected[station]
+    return corrected
 
 
 # https://stackoverflow.com/questions/12093594/how-to-implement-band-pass-butterworth-filter-with-scipy-signal-butter
@@ -121,7 +229,8 @@ def get_contiguous(data, min_length=28):
         i += 1
     return runs
 
-def filter_contiguous(data, short_min=2, long_min=12, expected_len=default_len):
+def filter_contiguous(data, short_min=2, long_min=12):
+    expected_len = len(data)
     chunked = get_contiguous(data)
     filtered_chunks = []
     for idx, chunk in chunked:
@@ -192,7 +301,8 @@ def get_depletion(signal):
     return get_brc(signal) - signal
 
 
-def depletion_contiguous(data, expected_len=default_len):
+def depletion_contiguous(data):
+    expected_len = len(data)
     chunked = get_contiguous(data)
     filtered_chunks = []
     for idx, chunk in chunked:

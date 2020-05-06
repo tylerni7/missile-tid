@@ -8,8 +8,7 @@ import numpy
 
 from laika import helpers
 
-#import ambiguity_correct_swap_fix as ambiguity_correct
-import ambiguity_correct_rho as ambiguity_correct
+import ambiguity_correct
 import tec
 
 CYCLE_SLIP_CUTOFF = 6
@@ -20,7 +19,7 @@ EL_CUTOFF = 0.30
 
 def contains_needed_info(measurement):
     observable = measurement.observables
-    chan2 = 'C2P' if not math.isnan(observable['C2P']) else 'C2C'
+    chan2 = 'C2C' if not math.isnan(observable.get('C2C', math.nan)) else 'C2P'
     needed = {'L1C', 'L2C', 'C1C', chan2}
     for need in needed:
         if math.isnan(observable.get(need, math.nan)):
@@ -31,7 +30,6 @@ class Connection:
     def __init__(self, dog, station_locs, station_data, station, prn, tick0, tickn):
         self.dog = dog
         self.loc = station_locs[station]
-        self.this_data = station_data[station][prn]
         self.station = station
         self.prn = prn
         self.tick0 = tick0
@@ -48,10 +46,9 @@ class Connection:
 
         # TODO: this could incorporate phase windup as well?
 
-        self.filter_ticks()
-#        self.detect_slips()
+        self.filter_ticks(station_data[station][prn])
 
-    def filter_ticks(self):
+    def filter_ticks(self, this_data):
         if self.ticks is not None:
             return
         
@@ -59,19 +56,19 @@ class Connection:
         last_seen = self.tick0
         last_mw = None
         for tick in range(self.tick0, self.tickn):
-            if not self.this_data[tick]:
+            if not this_data[tick]:
                 continue
 
-            if not contains_needed_info(self.this_data[tick]):
+            if not contains_needed_info(this_data[tick]):
                 continue
 
             # ignore "bad connections" (low elevation)
-            if not self.this_data[tick].processed:
-                if not self.this_data[tick].process(self.dog):
+            if not this_data[tick].processed:
+                if not this_data[tick].process(self.dog):
                     continue
-            if not self.this_data[tick].corrected:
-                self.this_data[tick].correct(self.loc, self.dog)
-            el, _ = helpers.get_el_az(self.loc, self.this_data[tick].sat_pos)
+            if not this_data[tick].corrected:
+                this_data[tick].correct(self.loc, self.dog)
+            el, _ = helpers.get_el_az(self.loc, this_data[tick].sat_pos)
             if el < EL_CUTOFF:
                 continue
 
@@ -84,7 +81,7 @@ class Connection:
             last_seen = tick
 
             # detect cycle slips due to changing N_w
-            mw, _ = tec.melbourne_wubbena(self.this_data[tick])
+            mw, _ = tec.melbourne_wubbena(this_data[tick])
             if last_mw is not None and abs(last_mw - mw) > CYCLE_SLIP_CUTOFF:
                 print("cycle slip: {0}-{1}@{2} jump of {3:0.2f}".format(
                     self.station, self.prn, tick, last_mw - mw
@@ -103,30 +100,6 @@ class Connection:
             self.tick0 = tick
             self.tickn = tick
 
-    def detect_slips(self):
-        """
-        if we get a cycle slip, our ambiguity numbers are invalid
-        so it becomes a new connection.
-        Easy way to detect is the Melbourne Wubbena combination
-        """
-        past = None
-        last_tick = None
-        for i, tick in enumerate(self.ticks):
-            mw, _ = tec.melbourne_wubbena(self.this_data[tick])
-            if past is None:
-                past = mw
-            elif abs(past - mw) > CYCLE_SLIP_CUTOFF:
-                print("cycle slip: {0}-{1} {2} jump of {3:0.2f}".format(
-                    self.station, self.prn, tick, past - mw
-                ))
-                last_tick = i
-                break
-        
-        # cut off data if need be
-        if last_tick is not None:
-            self.ticks = self.ticks[:last_tick]
-            if self.ticks:
-                self.tickn = self.ticks[-1]
 
 def make_connections(dog, station_locs, station_data, station, prn, tick0, tickn):
     """
@@ -150,9 +123,11 @@ def make_connections(dog, station_locs, station_data, station, prn, tick0, tickn
         ticki = next_valid_tick(con.tickn)
     return connections
 
-def get_connections(dog, station_locs, station_data):
+def get_connections(dog, station_locs, station_data, skip=None):
     connections = []
     for station in station_data.keys():
+        if station in skip:
+            continue
         for prn in station_data[station].keys():
             ticks = station_data[station][prn].keys()
             if not ticks:
@@ -273,9 +248,38 @@ def correct_groups(station_locs, station_data, groups):
         bads += correct_group(station_locs, station_data, group)
     print( numpy.mean(diffs), bads )
 
+def correct_conns(station_locs, station_data, conns):
+    print("correcting integer ambiguities")
+    for i, conn in enumerate(conns):
+        if i % 50 == 0:
+            print("completed %d/%d" % (i, len(conns)), end="\r")
+        if (
+            conn.n1 is not None
+            and not math.isnan(conn.n1)
+            and conn.n2 is not None
+            and not math.isnan(conn.n2)
+        ):
+            continue
+        n1, n2 = ambiguity_correct.solve_ambiguity_lsq(station_locs, station_data, conn.station, conn.prn, conn.ticks)
+        conn.n1 = n1
+        conn.n2 = n2
+    print()
+    
+
+def empty_factory():
+    return None
+
 def make_conn_map(connections):
     # make an easy-to-use map
-    conn_map = defaultdict(lambda : defaultdict(lambda : defaultdict(lambda : None)))
+    conn_map = {}
+    stations = {conn.station for conn in connections}
+    # defaultdict can mess with pickle, which we really want for caching...
+    # so do this slightly uglier version
+    for station in {conn.station for conn in connections}:
+        conn_map[station] = {
+            'G%02d' % i: defaultdict(empty_factory) for i in range(1, 33)
+        }
+
     for conn in connections:
         for tick in conn.ticks:
             conn_map[conn.station][conn.prn][tick] = conn

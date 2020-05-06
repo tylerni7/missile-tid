@@ -1,16 +1,11 @@
-"""
-correct for integer ambiguities in carrier phase data...
-"""
 
 import ctypes
 from laika.lib import coordinates
 from itertools import product
 import math
 import numpy
-from z3 import Solver, Optimize, Ints, Real, Reals, ToReal, sat, unsat
 
 import tec
-import tropo
 
 lambda_ws = {}
 lambda_ns = {}
@@ -47,7 +42,6 @@ brute.brute_force_dd.argtypes = [
 ]
 
 
-
 def double_difference(calculator, station_data, sta1, sta2, prn1, prn2, tick):
     # generic double difference calculator
     v11 = calculator(station_data[sta1][prn1][tick])
@@ -60,15 +54,40 @@ def double_difference(calculator, station_data, sta1, sta2, prn1, prn2, tick):
     
     return (v11[0] - v12[0]) - (v21[0] - v22[0])
 
+def bias(signal):
+    def f(meas):
+        res = signal(meas)
+        return res[0] - res[1], res[-1]
+    return f
 
-def phi_double_difference(station_data, sta1, sta2, prn1, prn2, tick):
-    # has to be same frequency bands for this to work
-    assert prn1[0] == prn2[0]
+def dd_solve(dd, vr1s1, vr1s2, vr2s1, vr2s2, wavelength):
+    biases = numpy.array([vr1s1, vr1s2, vr2s1, vr2s2], dtype=numpy.double)
+    ns = numpy.array([0, 0, 0, 0], dtype=numpy.int32)
 
-    return double_difference(
-        tec.calc_carrier_delay,
-        station_data, sta1, sta2, prn1, prn2, tick
+    err = brute.brute_force_dd(
+        ctypes.c_int32(int(dd)),
+        ctypes.c_double(wavelength),
+        biases.ctypes.data,
+        ns.ctypes.data,
     )
+    return ns, err, 0
+
+def widelane_solve(dd, station_data, sta1, sta2, prn1, prn2, ticks):
+    lambda_w = lambda_ws[prn1[0]]
+    vr1s1s = []
+    vr1s2s = []
+    vr2s1s = []
+    vr2s2s = []
+    for tick in ticks:
+        vr1s1s.append(tec.melbourne_wubbena(station_data[sta1][prn1][tick])[0])
+        vr1s2s.append(tec.melbourne_wubbena(station_data[sta1][prn2][tick])[0])
+        vr2s1s.append(tec.melbourne_wubbena(station_data[sta2][prn1][tick])[0])
+        vr2s2s.append(tec.melbourne_wubbena(station_data[sta2][prn2][tick])[0])
+    vr1s1 = numpy.mean(vr1s1s)
+    vr1s2 = numpy.mean(vr1s2s)
+    vr2s1 = numpy.mean(vr2s1s)
+    vr2s2 = numpy.mean(vr2s2s)
+    return dd_solve(dd, vr1s1, vr1s2, vr2s1, vr2s2, lambda_w)
 
 
 def widelane_ambiguity(station_data, sta1, sta2, prn1, prn2, tick):
@@ -89,152 +108,247 @@ def widelane_ambiguity(station_data, sta1, sta2, prn1, prn2, tick):
     lambda_w = lambda_ws[station_data[sta1][prn1][tick].prn[0]]
     return diff / lambda_w
 
+def lambda_solve(ddn1, ddn2, ws, station_data, sta1, sta2, prn1, prn2, all_ticks):
+    lambda_1 = lambda_1s[prn1[0]]
+    lambda_2 = lambda_2s[prn1[0]]
 
-def dd_solve(dd, vr1s1, vr1s2, vr2s1, vr2s2, wavelength):
-    biases = numpy.array([vr1s1, vr1s2, vr2s1, vr2s2], dtype=numpy.double)
-    ns = numpy.array([0, 0, 0, 0], dtype=numpy.int32)
+    # Φ_i - R_i = B_i + err  with B_i = b_i + λ_1*N_1 - λ_2*N_2
+    B_i = bias(tec.geometry_free)
+    Bis = []
+    for i, (sta, prn) in enumerate(product([sta1, sta2], [prn1, prn2])):
+        B_i_samples = []
+        for tick in all_ticks:
+            B_i_samples.append( B_i(station_data[sta][prn][tick])[0] )
+        #print(numpy.mean(B_i_samples), numpy.std(B_i_samples))
+        Bis.append(B_i_samples)
+    
+    # Φ - R = B + err with B = 
 
-    err = brute.brute_force_dd(
-        ctypes.c_int32(int(dd)),
-        ctypes.c_double(wavelength),
-        biases.ctypes.data,
-        ns.ctypes.data,
+    Q = numpy.cov(Bis[:3])
+
+    y = numpy.array([
+        [numpy.mean(Bis[0]) - lambda_2 * ws[0]],
+        [numpy.mean(Bis[1]) - lambda_2 * ws[1]],
+        [numpy.mean(Bis[2]) - lambda_2 * ws[2]],
+        [numpy.mean(Bis[3]) - lambda_2 * ws[3] - ddn1 * (lambda_1 - lambda_2)],
+    ])
+
+    A = numpy.array([
+        [lambda_1 - lambda_2, 0, 0],
+        [0, lambda_1 - lambda_2, 0],
+        [0, 0, lambda_1 - lambda_2],
+        [lambda_2 - lambda_1, lambda_1 - lambda_2, lambda_1 - lambda_2]
+    ])
+
+    a, _, _, _ = numpy.linalg.lstsq(A, y)
+    n1s = [
+        round(a[0][0]),
+        round(a[1][0]),
+        round(a[2][0]),
+        ddn1 - round(a[0][0]) + round(a[1][0]) + round(a[2][0])
+    ]
+    ns = [
+        (n1s[0], n1s[0] - ws[0]),
+        (n1s[1], n1s[1] - ws[1]),
+        (n1s[2], n1s[2] - ws[2]),
+        (n1s[3], n1s[3] - ws[3]),
+    ]
+    return ns, ws, 0, 0, 0
+
+def geometry_free_solve(ddn1, ddn2, ws, station_data, sta1, sta2, prn1, prn2, ticks):
+    lambda_1 = lambda_1s[prn1[0]]
+    lambda_2 = lambda_2s[prn1[0]]
+
+    # Φ_i - R_i = B_i + err  with B_i = b_i + λ_1*N_1 - λ_2*N_2
+    B_i = bias(tec.geometry_free)
+    
+    Bis = [0, 0, 0, 0]
+
+    for i, (sta, prn) in enumerate(product([sta1, sta2], [prn1, prn2])):
+        B_i_samples = []
+        for tick in ticks[i]:
+            B_i_samples.append( B_i(station_data[sta][prn][tick])[0] )
+        #print(numpy.mean(B_i_samples), numpy.std(B_i_samples))
+        Bis[i] = numpy.mean(B_i_samples)
+
+    Bis = numpy.array(Bis, dtype=numpy.double)
+    ws_ints = numpy.array(ws, dtype=numpy.int32)
+    n1s = numpy.array([0, 0, 0, 0], dtype=numpy.int32)
+    n2s = numpy.array([0, 0, 0, 0], dtype=numpy.int32)
+
+    err = brute.brute_force(
+        ctypes.c_int32(int(ddn1)),
+        ctypes.c_int32(int(ddn2)),
+        ws_ints.ctypes.data,
+        ctypes.c_double(lambda_1),
+        ctypes.c_double(lambda_2),
+        Bis.ctypes.data,
+        n1s.ctypes.data,
+        n2s.ctypes.data
     )
-    return ns, err
-
-def widelane_solve(dd, station_data, sta1, sta2, prn1, prn2, ticks):
-    lambda_w = lambda_ws[prn1[0]]
-    vr1s1s = []
-    vr1s2s = []
-    vr2s1s = []
-    vr2s2s = []
-    for tick in ticks:
-        vr1s1s.append(tec.melbourne_wubbena(station_data[sta1][prn1][tick])[0])
-        vr1s2s.append(tec.melbourne_wubbena(station_data[sta1][prn2][tick])[0])
-        vr2s1s.append(tec.melbourne_wubbena(station_data[sta2][prn1][tick])[0])
-        vr2s2s.append(tec.melbourne_wubbena(station_data[sta2][prn2][tick])[0])
-    vr1s1 = numpy.mean(vr1s1s)
-    vr1s2 = numpy.mean(vr1s2s)
-    vr2s1 = numpy.mean(vr2s1s)
-    vr2s2 = numpy.mean(vr2s2s)
-    return dd_solve(dd, vr1s1, vr1s2, vr2s1, vr2s2, lambda_w)
-
-
-def estimate_Bc(meas):
-#    meas = station_data[sta][prn][tick]
-    phase, pseudorange, wavelength = tec.ionosphere_free(meas)
-    return phase - pseudorange, wavelength
-
-def bias(signal):
-    def f(meas):
-        res = signal(meas)
-        return res[0] - res[1], res[-1]
-    return f
-
-
-def test_n1(N_w, station_data, sta, prn, ticks):
-    # given N_w = N_1 - N_2
-    # test out a N1/N2 combinations
-
-    # get things that don't change base on N_1:
-    #   using N_w get b_w, delay_factor_w, B_c, B_i, wavelengths
-    # for each N_1 candidate:
-    #   using N_w, N_1_candidate, B_c, estimate b_c, use that to get
-    #      a b_I estimate plug in to get ERR_1
-    #   using b_c, b_w, N_1_candidate, delay_factor_w, estimate b_I
-    #      and use that to get ERR_1
-
-    lambda_1 = lambda_1s[prn[0]]
-    lambda_2 = lambda_2s[prn[0]]
-    lambda_n = lambda_ns[prn[0]]
-    lambda_w = lambda_ws[prn[0]]
-
-    b_w = numpy.mean([
-        tec.melbourne_wubbena(station_data[sta][prn][tick]) for tick in ticks
-    ]) - lambda_w * N_w
-
-    freqs = tec.F_lookup[prn[0]]
-    # TODO why are f1 and f2 reversed from what I expect?
-    delay_factor_w = freqs[0]*freqs[1]/(freqs[1]**2 - freqs[0]**2)
-    B_c = numpy.mean([
-        estimate_Bc(station_data[sta][prn][tick])[0] for tick in ticks
-    ])
-    gf_bias = bias(tec.geometry_free)
-    B_i = numpy.mean([
-        gf_bias(station_data[sta][prn][tick]) for tick in ticks
-    ])
-
-
-    N_1_best = None
-    err_best = 10000
-
-    for N_1_cand in range(-200, 200):
-        N_2_cand = N_1_cand - N_w
-
-        b_c_meas = B_c - lambda_n * (N_1_cand + N_w * lambda_w / lambda_2)
-        b_i_meas = B_i - lambda_1 * N_1_cand + lambda_2 * N_2_cand
-
-        b_i_est = (b_w - b_c_meas) / delay_factor_w
-        b_c_est = b_w - delay_factor_w * b_i_meas
-        
-        err1 = (b_i_est - b_i_meas)**2
-        err2 = (b_c_est - b_c_meas)**2
-        if err1 + err2 < err_best:
-            err_best = err1 + err2
-            N_1_best = N_1_cand
-    return N_1_best, err_best
-
-
-def solve_ambiguities(station_data, sta1, sta2, prn1, prn2, ticks):
+    #print(n1s, n2s, err)
     """
-    Attempt to solve integer ambiguities for the given stations x prns
-    on the given ticks.
-
-    TODO: this doesn't use a ∆∇B_c estimate to get ∆∇N_1, because I did
-        not have luck with that. It could help improve results...
+    err = brute.brute_force_harder(
+        ws_ints.ctypes.data,
+        ctypes.c_double(lambda_1),
+        ctypes.c_double(lambda_2),
+        Bis.ctypes.data,
+        n1s.ctypes.data,
+        n2s.ctypes.data
+    )
+    print(n1s, n2s, err)
     """
+    return [(n1s[i], n2s[i]) for i in range(4)], ws_ints, 0, 0, 0
 
-    # step 1: find widelane double difference to estimate ∆∇N_W
-    # step 2: solve N_Ws
-    # step 3: use N_Ws to solve for probable N_1s
+def rho(station_locs, station_data, station, prn, tick):
+    if station_data[station][prn][tick].corrected:
+        return numpy.linalg.norm(station_locs[station] - station_data[station][prn][tick].sat_pos_final)
+    else:
+        return numpy.linalg.norm(station_locs[station] - station_data[station][prn][tick].sat_pos)
 
+def solve_ambiguities(station_locs, station_data, sta1, sta2, prn1, prn2, ticks):
     # initialize wavelengths for this frequency band
     lambda_1 = lambda_1s[prn1[0]]
     lambda_2 = lambda_2s[prn1[0]]
     lambda_n = lambda_ns[prn1[0]]
     lambda_w = lambda_ws[prn1[0]]
 
-    # step 1: get widelane dd (∆∇N_W)
+    all_ticks = set(ticks[0]) & set(ticks[1]) & set(ticks[2]) & set(ticks[3])
+
+    def rho_dd(tick):
+        return (
+            rho(station_locs, station_data, sta1, prn1, tick)
+            - rho(station_locs, station_data, sta1, prn2, tick)
+            - rho(station_locs, station_data, sta2, prn1, tick)
+            + rho(station_locs, station_data, sta2, prn2, tick)
+        )
+
+    def dd_phi(tick, chan):
+        return (
+            station_data[sta1][prn1][tick].observables.get(chan, math.nan)
+            - station_data[sta1][prn2][tick].observables.get(chan, math.nan)
+            - station_data[sta2][prn1][tick].observables.get(chan, math.nan)
+            + station_data[sta2][prn2][tick].observables.get(chan, math.nan)
+        )
+
+    ddrho = numpy.array([rho_dd(tick) for tick in all_ticks])
+    ddphi1 = numpy.array([dd_phi(tick, 'L1C') for tick in all_ticks])
+    ddphi2 = numpy.array([dd_phi(tick, 'L2C') for tick in all_ticks])
+
+    ddn1 = round(numpy.mean(ddphi1 - ddrho/lambda_1))
+    ddn2 = round(numpy.mean(ddphi2 - ddrho/lambda_2))
+
     widelane_dds = []
 
-    for tick in ticks:
+    for tick in all_ticks:
         w = widelane_ambiguity(station_data, sta1, sta2, prn1, prn2, tick)
         if math.isnan(w):
             continue
         widelane_dds.append(w)
-
+    
     widelane_dd = numpy.mean(widelane_dds)
-#    print("wideland double difference: {0:0.3f} +/- {1:0.4f}".format(
-#        widelane_dd, numpy.std(widelane_dds)
-#    ))
-
+    #print("wideland double difference: {0:0.3f} +/- {1:0.4f}".format(
+    #    widelane_dd, numpy.std(widelane_dds)
+    #))
     widelane_dd = round(widelane_dd)
 
-    # step 2:
-    # estimate N_Ws
-    ws, err = widelane_solve(widelane_dd, station_data, sta1, sta2, prn1, prn2, ticks)
-    if err >= 10000.0:
-        print("couldn't find solution for ", sta1, sta2, prn1, prn2)
-        return None
+    if abs((ddn1 - ddn2) - widelane_dd) > max(5 * numpy.std(widelane_dds), 3):
+        print("divergence for %s-%s %s-%s @ %d" % (sta1, sta2, prn1, prn2, min(all_ticks)))
+        print("our dd = %d, widelane_dd = %d" % (ddn1 - ddn2, widelane_dd))
+        print("n1,n2,w err %0.2f %0.2f %0.2f\n" % (
+            numpy.std(ddphi1 - ddrho/lambda_1),
+            numpy.std(ddphi2 - ddrho/lambda_2),
+            numpy.std(widelane_dds)
+        ))
 
-    # step 3:
-    ns = []
-    for i, (sta, prn) in enumerate(product([sta1, sta2], [prn1, prn2])):
-        n1, err = test_n1(ws[i], station_data, sta, prn, ticks)
-        if err >= 10000.0:
-            print("couldn't find solution for ", sta1, sta2, prn1, prn2)
-            return None
-        n2 = n1 - ws[i]
-        ns.append( (n1, n2, err) )
+    ws, errs, _ = widelane_solve(widelane_dd, station_data, sta1, sta2, prn1, prn2, all_ticks)
+
+    return lambda_solve(ddn1, ddn2, ws, station_data, sta1, sta2, prn1, prn2, all_ticks)
+#    return geometry_free_solve(ddn1, ddn2, ws, station_data, sta1, sta2, prn1, prn2, ticks)
+
+def solve_ambiguity(station_data, sta, prn, ticks):
+    freq_1, freq_2 = tec.F_lookup[prn[0]]
+    lambda_1 = lambda_1s[prn[0]]
+    lambda_2 = lambda_2s[prn[0]]
+    def obs(tick, chan):
+        return station_data[sta][prn][tick].observables.get(chan, math.nan)
+
+    n21ests = []
+    n1ests = []
+    for tick in ticks:
+        # see GNSS eq 7.31
+        n21ests.append(
+            (obs(tick, 'L1C') - obs(tick, 'L2C'))
+            - (freq_1 - freq_2)/(freq_1 + freq_2) * (
+                obs(tick, 'C1C')/lambda_1 + obs(tick, 'C2C')/lambda_2
+            )
+        )
     
-    return ns
+        n1ests.append(
+            obs(tick, 'L1C')
+            + 1 / (freq_2**2 - freq_1**2) * (
+                (freq_1**2 + freq_2**2) * obs(tick, 'C1C') / lambda_1
+                - (2 * freq_1 * freq_2) * obs(tick, 'C2C') / lambda_2
+            )
+        )
+
+    n1 = round(numpy.mean(n1ests))
+    n2 = n1 - round(numpy.mean(n21ests))
+
+    return n1, n2
+
+
+def solve_ambiguity_lsq(station_locs, station_data, sta, prn, ticks):
+    freq_1, freq_2 = tec.F_lookup[prn[0]]
+    lambda_1 = lambda_1s[prn[0]]
+    lambda_2 = lambda_2s[prn[0]]
+
+
+    def obs(tick, chan):
+        return station_data[sta][prn][tick].observables.get(chan, math.nan)
+
+    chan2 = 'C2C' if not math.isnan(obs(ticks[0], 'C2C')) else 'C2P'
+
+    n21ests = []
+    n1ests = []
+    for tick in ticks:
+        # see GNSS eq 7.31
+        n21ests.append(
+            (obs(tick, 'L1C') - obs(tick, 'L2C'))
+            - (freq_1 - freq_2)/(freq_1 + freq_2) * (
+                obs(tick, 'C1C')/lambda_1 + obs(tick, chan2)/lambda_2
+            )
+        )
+
+    # estimate of n1 - n2
+    n21 = round(numpy.mean(n21ests))
+
+    y = numpy.zeros((4 * len(ticks), 1))
+    A = numpy.zeros((4 * len(ticks), 1 + 2 * len(ticks)))
+
+    for i, tick in enumerate(ticks):
+        distance = rho(station_locs, station_data, sta, prn, tick)
+        y[i*4 + 0][0] = obs(tick, 'L1C') - distance / freq_1
+        y[i*4 + 1][0] = obs(tick, 'L2C') - distance / freq_2 + n21
+        y[i*4 + 2][0] = obs(tick, 'C1C') / lambda_1 - distance / freq_1
+        y[i*4 + 3][0] = obs(tick, chan2) / lambda_2 - distance / freq_2
+
+        # x has the format [n1, a_0, b_0, a_1, b_1, ... a_n, b_n]
+        A[i*4 + 0][0] = 1
+        A[i*4 + 0][1 + i*2 + 0] = freq_1
+        A[i*4 + 0][1 + i*2 + 1] = -1e9/freq_1
+
+        A[i*4 + 1][0] = 1
+        A[i*4 + 1][1 + i*2 + 0] = freq_2
+        A[i*4 + 1][1 + i*2 + 1] = -1e9/freq_2
+
+        A[i*4 + 2][1 + i*2 + 0] = freq_1
+        A[i*4 + 2][1 + i*2 + 1] = 1e9/freq_1
+
+        A[i*4 + 3][1 + i*2 + 0] = freq_2
+        A[i*4 + 3][1 + i*2 + 1] = 1e9/freq_2
+
+    #return numpy.linalg.lstsq(A, y)
+
+    a, _, _, _ = numpy.linalg.lstsq(A, y)
+    return round(a[0][0]), round(a[0][0]) - n21 

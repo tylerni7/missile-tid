@@ -8,8 +8,8 @@ import math
 
 from laika import constants, helpers
 
-K = 40.308
-m_to_TEC = 6.158
+K = 40.308e16
+m_to_TEC = 6.158  # meters of L1 error to TEC
 # set ionosphere puncture to 350km
 IONOSPHERE_H = constants.EARTH_RADIUS + 350000
 # maximum density of electrons for slant calculation
@@ -27,7 +27,7 @@ F_lookup = {
 
 def correct_tec(tec_entry, rcvr_bias=0, sat_bias=0):
     location, vtecish, s_to_v = tec_entry
-    stec = vtecish / s_to_v  + 0.64694 * K * (sat_bias - rcvr_bias)
+    stec = vtecish / s_to_v  + 9.517753907876292 * (sat_bias - rcvr_bias)
     return location, stec * s_to_v, s_to_v
 
 def calc_vtec(dog, rec_pos, measurement, ionh=IONOSPHERE_H, el_cut=0.30, n1=0, n2=0, rcvr_bias=0, sat_bias=0):
@@ -59,11 +59,8 @@ def calc_vtec(dog, rec_pos, measurement, ionh=IONOSPHERE_H, el_cut=0.30, n1=0, n
     return stec * s_to_v, ion_loc(rec_pos, measurement.sat_pos), s_to_v
 
 def s_to_v_factor(el, ionh=IONOSPHERE_H):
-    return math.sqrt(1 - (math.cos(el) * constants.EARTH_RADIUS / IONOSPHERE_MAX_D) ** 2)
+    return math.sqrt(1 - (math.cos(el) * constants.EARTH_RADIUS / ionh) ** 2)
 
-def s_to_v_factor3(el, ionh=IONOSPHERE_H):
-    zenith = math.asin(constants.EARTH_RADIUS * math.sin(math.pi/2 + el) / IONOSPHERE_MAX_D)
-    return math.cos(zenith)
 
 def ion_loc(rec_pos, sat_pos):
     """
@@ -111,7 +108,7 @@ def calc_carrier_delay(measurement, n1=0, n2=0, rcvr_bias=0, sat_bias=0):
         # missing info: can't do the calculation
         return None
 
-    delay_factor = freqs[0]**2 / freqs[1]**2 - 1    # freqs[1]**2/(freqs[0]**2 - freqs[1]**2)
+    delay_factor = freqs[0]**2 * freqs[1]**2/(freqs[0]**2 - freqs[1]**2)
 
     phase_diff_meters = C * (
         (observable[band_1] - n1)/freqs[0] - (observable[band_2] - n2)/freqs[1]
@@ -137,7 +134,7 @@ def calc_tec(measurement, n1=0, n2=0, rcvr_bias=0, sat_bias=0):
         return None
 
     phase_diff, delay_factor = res
-    return phase_diff * K * delay_factor
+    return phase_diff * delay_factor / K
 
 def melbourne_wubbena(measurement):
     """
@@ -216,8 +213,3 @@ def geometry_free(measurement):
     # yes, pseudorange is flipped intentionally
     pseudorange = observable[chan2] - observable['C1C']
     return phase, pseudorange
-
-
-# TODO: testing kludge
-xs = [s_to_v_factor(i/100) for i in range(2000)]
-ys = [s_to_v_factor2(i/100) for i in range(2000)]
