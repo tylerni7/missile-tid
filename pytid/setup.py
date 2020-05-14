@@ -4,7 +4,7 @@ setup(
     name="gnss",
     version="0.1",
     author="Tyler Nighswander",
-    install_requires=["laika", "numpy", "scipy"],
+    install_requires=["laika", "numpy", "scipy","matplotlib"],
     packages=["gnss"],
     ext_package="gnss",
     ext_modules=[
