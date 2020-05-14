@@ -213,3 +213,31 @@ def geometry_free(measurement):
     # yes, pseudorange is flipped intentionally
     pseudorange = observable[chan2] - observable['C1C']
     return phase, pseudorange
+
+def ionosphere_combination(measurement, n1=0, n2=0):
+    """
+    combining the narrowland and widelane combinations to get
+    a signal where the ionosphere is counted twice
+    eq 8.28 in Petrovski and Tsujii Digital Satellite Navigation and Geophysics
+    kind of like an anti-Melbourne Wubbena
+    """
+
+    if measurement is None:
+        return None
+    observable = measurement.observables
+    chan2 = 'C2C' if not math.isnan(observable.get('C2C', math.nan)) else 'C2P'
+    freqs = F_lookup[measurement.prn[0]]
+
+    N_w = n1 - n2
+    N_n = n1 + n2
+
+    lambda_w = C/(freqs[0] - freqs[1])
+    phi_w = lambda_w * (observable['L1C'] - observable['L2C'])
+
+    lambda_n = C/(freqs[0] + freqs[1])
+    phi_n = lambda_n * (observable['L1C'] + observable['L2C'])
+
+    # phi_w - phi_n = 2*I - lambda_n * N_n + lambda_w * N_w + (errors)
+    ion = phi_w - phi_n + lambda_n * N_n - lambda_w * N_w
+
+    return ion/2

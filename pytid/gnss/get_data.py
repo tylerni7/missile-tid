@@ -12,17 +12,31 @@ import numpy
 import os
 import pickle
 
-from laika import AstroDog
+from laika import AstroDog, constants
 from laika.gps_time import GPSTime
 from laika.downloader import download_cors_station
 from laika.rinex_file import RINEXFile, DownloadError
 from laika.dgps import get_station_position
 import laika.raw_gnss as raw
 
-import tec
+from . import tec
 
 # one day worth of samples every 30 seconds
 default_len = int(24*60/0.5)
+
+def get_satellite_delays(dog, date):
+    dog.get_dcb_data(GPSTime.from_datetime(start_date))
+    res = {}
+    # published data is in nanoseconds...
+    # ours is in pseudorange (meters)
+    factor = constants.SPEED_OF_LIGHT/1e9
+    factor = 0.365
+    for prn in ['G%02d' % i for i in range(1, 33)]:
+        if hasattr(dog.dcbs[prn][0], 'C1W_C2W'):
+            res[prn] = dog.dcbs[prn][0].C1W_C2W * factor
+        elif hasattr(dog.dcbs[prn][0], 'C1P_C2P'):
+            res[prn] = dog.dcbs[prn][0].C1P_C2P * factor
+    return res
 
 def data_for_station(dog, station_name, date=None):
     """
@@ -79,7 +93,7 @@ def populate_data(dog, start_date, duration, stations):
 
         station_data[station] = {'G%02d' % i: defaultdict(empty_factory) for i in range(1, 33)}
         date = start_date
-        while date <= start_date + duration:
+        while date < start_date + duration:
             try:
 
                 loc, data = data_for_station(dog, station, date)
@@ -176,6 +190,7 @@ def correct_vtec_data(vtecs, sat_biases, station_biases):
             continue
         for prn in ['G%02d' % i for i in range(1, 33)]:
             if prn not in corrected[station]:
+                print("no sat info for %s for %s" % (station, prn))
                 continue
             for i in range(len(corrected[station][prn][0])):
                 dat = corrected[station][prn][0][i], corrected[station][prn][1][i], corrected[station][prn][2][i]

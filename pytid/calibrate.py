@@ -10,10 +10,7 @@ import pickle
 from scipy.signal import butter, lfilter, filtfilt, sosfiltfilt
 
 
-import tec
-import get_data
-import bias_solve
-import connections
+from gnss import bias_solve, connections, get_data, tec
 
 
 dog = AstroDog(cache_dir=os.environ['HOME'] + "/.gnss_cache/")
@@ -32,7 +29,7 @@ stations = [
     'scsr', 'cofc', 'nmsu', 'azmp', 'wask', 'dunn', 'zjx1', 'talh', 'gaay',
     'ztl4', 'aldo', 'fmyr', 'crst', 'altu', 'mmd1', 'prjc', 'msin',
     'cola', 'alla', 'mspe', 'tn22', 'tn18', 'wvat', 'ines', 'freo', 'hnpt',
-    'ncbx', 'ncdu',
+    'ncbx', 'ncdu', 'loyq', 'ict1', 'p143', 'mc09', 'neho', 'moca'
 ]
 
 """
@@ -68,7 +65,7 @@ for station in stations:
         conns += pickle.load(open(connection_cache_name, "rb"))
 
 # get connections without cycle slips
-conns = connections.get_connections(dog, station_locs, station_data, skip=restored)
+conns += connections.get_connections(dog, station_locs, station_data, skip=restored)
 conn_map = connections.make_conn_map(conns)
 
 # take cycle-slip free data, and solve integer ambiguities
@@ -129,6 +126,6 @@ def compare_ion(true_tecs, start_date, tecs):
             and date in true_tecs[lat][lon]
         ):
             true_tec = true_tecs[lat][lon][date]
-            print(lat, lon, date, our_tec, true_tec, abs(our_tec-true_tec))
+            print(lat, lon, date, "%5.2f %5.2f   %5.2f" % (our_tec, true_tec, abs(our_tec-true_tec)))
             errs.append(our_tec-true_tec)
     return errs

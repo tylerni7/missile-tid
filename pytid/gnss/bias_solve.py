@@ -19,16 +19,17 @@ We can use quadratic programming for this...
 """
 
 from collections import defaultdict
-from cvxopt import matrix, solvers, spmatrix
 from laika.lib.coordinates import ecef2geodetic
 import numpy
 
-from tec import K, F_lookup
+from scipy import optimize, sparse
 
-#lat_lon_res = 0.5  # 0.5 degrees
-lat_res = 2.5
-lon_res = 5.0
-time_res = 60*15   # 30 minutes
+from .tec import K, F_lookup
+
+# same res as the published TEC maps so we can compare more easily
+lat_res = 2.5      # 2.5 degrees 
+lon_res = 5.0      # 5.0 degrees
+time_res = 60*15   # 15 minutes
 
 
 class Observation:
@@ -39,14 +40,72 @@ class Observation:
         self.tec = tec
         self.slant = slant
 
+def lsq_solve(coincidences, measurements, svs, recvs, sat_biases=None):
+    # total unknowns to recover
+    n = len(svs) + len(recvs) + len(coincidences)
+
+    # each measurement we have
+    m = len(measurements)
+
+    A = sparse.dok_matrix((m, n))
+    b = numpy.zeros((m, ))
+
+    ssvs = sorted(svs)
+    def sat_bias(prn):
+        i = ssvs.index(prn)
+        return i
+    srecvs = sorted(recvs)
+    def recv_bias(recv):
+        i = srecvs.index(recv)
+        return len(svs) + i
+    scois = sorted(coincidences.keys())
+    def coincidence_idx(coi):
+        i = scois.index(coi)
+        # TODO how to get i?
+        return len(svs) + len(recvs) + i
+
+    print("constructing matrix")
+    # assume all measurements use same frequency
+    freqs = F_lookup[measurements[0].sat[0]]
+    delay_factor = freqs[0]**2 * freqs[1]**2/(freqs[0]**2 - freqs[1]**2)
+    for i, measurement in enumerate(measurements):
+
+        if not sat_biases or measurement.sat not in sat_biases:
+            # sat biases have opposite sign by convention...
+            A[i, sat_bias(measurement.sat)] = -delay_factor / K
+        A[i, recv_bias(measurement.station)] = delay_factor / K
+        A[i, coincidence_idx(measurement.coi)] = 1 / measurement.slant
+
+        b[i] = measurement.tec / measurement.slant
+        if sat_biases and measurement.sat in sat_biases:
+            b[i] -= (delay_factor / K) * sat_biases[measurement.sat]
+
+    print("solving")
+    upper_bounds = numpy.ones(n) * numpy.inf
+    lower_bounds = numpy.concatenate((
+        numpy.ones(len(svs) + len(recvs)) * -numpy.inf,
+        numpy.zeros(len(coincidences))
+    ))
+    res = optimize.lsq_linear(A, b, bounds=(lower_bounds, upper_bounds))
+    sat_biases =  {prn:res.x[sat_bias(prn)] for prn in svs}
+    recv_biases = {recv:res.x[recv_bias(recv)] for recv in recvs}
+    tec_values =  {coi:res.x[coincidence_idx(coi)] for coi in coincidences.keys()}
+    return sat_biases, recv_biases, tec_values
+
 
 def opt_solve(coincidences, measurements, svs, recvs):
     """
     minimize x^T * P * x + q^T * x
     st. Ax = b
+
+    there must have been a reason I chose quadratic programming, but
+    I can't remember :P so probably the linear solver is a lot better
     """
+    from cvxopt import matrix, solvers, spmatrix
 
     # TODO: encode that TEC values are > 0
+    # TODO: at this point, this is basically just (weighted) least squares
+    #   maybe I should use lsq instead...
 
     # length of x vector
     n = len(measurements) + len(svs) + len(recvs) + len(coincidences)

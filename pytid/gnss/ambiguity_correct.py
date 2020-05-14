@@ -4,8 +4,9 @@ from laika.lib import coordinates
 from itertools import product
 import math
 import numpy
+import pathlib
 
-import tec
+from . import tec
 
 lambda_ws = {}
 lambda_ns = {}
@@ -17,7 +18,11 @@ for ident, freqs in tec.F_lookup.items():
     lambda_1s[ident] = tec.C/(freqs[0])
     lambda_2s[ident] = tec.C/(freqs[1])
 
-brute = ctypes.CDLL("brute.so")
+# TODO we probably don't need this stuff at all if we're smarter...
+# meh hacking around .so in setup.py that isn't /actually/ a python lib
+[so_path] = list(pathlib.Path(__file__).parent.glob("brute.*"))
+
+brute = ctypes.CDLL(so_path)
 brute.brute_force.restype = ctypes.c_double
 brute.brute_force.argtypes = [
     ctypes.c_int32, ctypes.c_int32,    # n1 and n2 double differences

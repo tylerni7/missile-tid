@@ -8,8 +8,8 @@ import numpy
 
 from laika import helpers
 
-import ambiguity_correct
-import tec
+from . import ambiguity_correct
+from . import tec
 
 CYCLE_SLIP_CUTOFF = 6
 MIN_CON_LENGTH = 20  # 10 minutes worth of connection
@@ -126,7 +126,7 @@ def make_connections(dog, station_locs, station_data, station, prn, tick0, tickn
 def get_connections(dog, station_locs, station_data, skip=None):
     connections = []
     for station in station_data.keys():
-        if station in skip:
+        if skip and station in skip:
             continue
         for prn in station_data[station].keys():
             ticks = station_data[station][prn].keys()
