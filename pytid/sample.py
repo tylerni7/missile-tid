@@ -43,3 +43,5 @@ sat_biases, rcvr_biases, tecs = bias_solve.lsq_solve(*cal_dat)
 print("Correcting vTEC data with biases")
 corrected_vtecs = get_data.correct_vtec_data(station_vtecs, sat_biases, rcvr_biases)
 
+print("Showing some data")
+plot.plot_station(corrected_vtecs, 'flwe')
