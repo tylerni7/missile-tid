@@ -48,10 +48,10 @@ def data_for_station(dog, station_name, date=None):
     if date is None:
         date = datetime(2020,1,7)
     time = GPSTime.from_datetime(date)
-    rinex_obs_file = download_cors_station(time, station_name, dog.cache_dir)
+    rinex_obs_file = download_cors_station(time, station_name, cache_dir=dog.cache_dir)
 
     obs_data = RINEXFile(rinex_obs_file)
-    station_pos = get_station_position(station_name)
+    station_pos = get_station_position(station_name, cache_dir=dog.cache_dir)
     return station_pos, raw.read_rinex_obs(obs_data)
 
 # want to create:
@@ -88,7 +88,7 @@ def populate_data(dog, start_date, duration, stations):
         )
         if os.path.exists(cache_name):
             station_data[station] = pickle.load(open(cache_name, "rb"))
-            station_locs[station] = get_station_position(station)
+            station_locs[station] = get_station_position(station, cache_dir=dog.cache_dir)
             continue
 
         station_data[station] = {'G%02d' % i: defaultdict(empty_factory) for i in range(1, 33)}
@@ -106,6 +106,7 @@ def populate_data(dog, start_date, duration, stations):
             except (ValueError, DownloadError):
                 print("*** error with station " + station)
             date += timedelta(days=1)
+        os.makedirs("cached", exist_ok=True)
         pickle.dump(station_data[station], open(cache_name, "wb"))
     return station_locs, station_data
 

@@ -2,7 +2,6 @@ from datetime import timedelta
 from matplotlib import animation
 from matplotlib import cm
 import matplotlib.pyplot as plt
-from mpl_toolkits.basemap import Basemap
 import numpy
 
 from laika.lib import coordinates
@@ -40,6 +39,7 @@ def plot_station_filter(vtecs, station, short_min=2, long_min=12):
 
 
 def plot_map(vtec, stations, start_date, frames=None):
+    from mpl_toolkits.basemap import Basemap
     globe = Basemap(projection='mill',lon_0=180)
     # plot coastlines, draw label meridians and parallels.
     globe.drawcoastlines()
