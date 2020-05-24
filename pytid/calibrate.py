@@ -10,10 +10,14 @@ import pickle
 from scipy.signal import butter, lfilter, filtfilt, sosfiltfilt
 
 
-from gnss import bias_solve, connections, get_data, tec
+from pytid.gnss import bias_solve, connections, get_data
+from pytid.utils.configuration import Configuration
 
 
-dog = AstroDog(cache_dir=os.environ['HOME'] + "/.gnss_cache/")
+conf = Configuration()
+
+dog = AstroDog(cache_dir=conf.gnss.get("cache_dir"))
+
 start_date = datetime(2020, 2, 15)
 duration = timedelta(days=3)
 

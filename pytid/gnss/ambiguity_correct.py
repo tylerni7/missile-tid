@@ -1,12 +1,10 @@
-
 import ctypes
-from laika.lib import coordinates
 from itertools import product
 import math
 import numpy
-import pathlib
 
-from . import tec
+from pytid.gnss import tec
+from pytid.utils.io import find_shared_objects
 
 lambda_ws = {}
 lambda_ns = {}
@@ -18,9 +16,8 @@ for ident, freqs in tec.F_lookup.items():
     lambda_1s[ident] = tec.C/(freqs[0])
     lambda_2s[ident] = tec.C/(freqs[1])
 
-# TODO we probably don't need this stuff at all if we're smarter...
-# meh hacking around .so in setup.py that isn't /actually/ a python lib
-[so_path] = list(pathlib.Path(__file__).parent.glob("brute.*"))
+# Find the path to the compiled C libraries. Setup.py must have been run!
+so_path = find_shared_objects(prefix="brute.")
 
 brute = ctypes.CDLL(so_path)
 brute.brute_force.restype = ctypes.c_double
