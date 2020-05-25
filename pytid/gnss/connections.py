@@ -3,19 +3,19 @@ each satellite <-> station "connection" has fixed values for
 integer ambiguities. Break this out into an easy-to-use class
 """
 from collections import defaultdict
+from laika import helpers
 import math
 import numpy
 
-from laika import helpers
-
-from . import ambiguity_correct
-from . import tec
+from pytid.gnss import ambiguity_correct
+from pytid.gnss import tec
 
 CYCLE_SLIP_CUTOFF = 6
 MIN_CON_LENGTH = 20  # 10 minutes worth of connection
 DISCON_TIME = 5      # cycle slip for >= 5 samples of no info
 
 EL_CUTOFF = 0.30
+
 
 def contains_needed_info(measurement):
     observable = measurement.observables
@@ -25,6 +25,7 @@ def contains_needed_info(measurement):
         if math.isnan(observable.get(need, math.nan)):
             return False
     return True
+
 
 class Connection:
     def __init__(self, dog, station_locs, station_data, station, prn, tick0, tickn):

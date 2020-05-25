@@ -6,26 +6,26 @@ nice usable datastructures
 from collections import defaultdict
 import copy
 from datetime import datetime, timedelta
-from scipy.signal import butter, lfilter, filtfilt, sosfiltfilt
+from scipy.signal import butter, filtfilt
 import math
 import numpy
 import os
 import pickle
 
-from laika import AstroDog, constants
+from laika import constants
 from laika.gps_time import GPSTime
 from laika.downloader import download_cors_station
 from laika.rinex_file import RINEXFile, DownloadError
 from laika.dgps import get_station_position
 import laika.raw_gnss as raw
 
-from . import tec
+from pytid.gnss import tec
 
 # one day worth of samples every 30 seconds
 default_len = int(24*60/0.5)
 
 def get_satellite_delays(dog, date):
-    dog.get_dcb_data(GPSTime.from_datetime(start_date))
+    dog.get_dcb_data(GPSTime.from_datetime(date))
     res = {}
     # published data is in nanoseconds...
     # ours is in pseudorange (meters)
