@@ -43,6 +43,7 @@ class StationPlotter:
         plt.xlabel("Time")
 
         if self.to_disk:
+            os.makedirs(plot_dir, exist_ok=True)
             path = os.path.join(plot_dir, f"{numeric_date}_{station}.png")
             logger.info(f"Saving plot to {path}")
             plt.savefig(path)
