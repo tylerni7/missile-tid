@@ -22,7 +22,7 @@ class StationPlotter:
     Helper class for the plotting of the TEC at each station
     """
 
-    def __init__(self, vtecs, date: datetime, to_disk: bool = True):
+    def __init__(self, vtecs, date: datetime, to_disk: bool = False):
         """
         :param vtecs: The corrected vertical total electron content data
         :param to_disk: Save the plot to disk

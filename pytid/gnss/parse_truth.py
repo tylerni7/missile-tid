@@ -4,7 +4,7 @@ ftp://igs.ensg.ign.fr/pub/igs/products/ionosphere/2020/
 this is to help parse it to compare to our own data
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 import numpy
 import re
 
@@ -60,6 +60,22 @@ def conv_ionmap(ion):
                 convion[lat][lon][date] = ion[date][lat][lon]
 
     return convion
+
+def conv_tecs(tecs, startdate):
+    convion = dict()
+    for (lat, lon, tick), tec in tecs.items():
+        if lat not in convion:
+            convion[lat] = dict()
+        if lon not in convion[lat]:
+            convion[lat][lon] = dict()
+        convion[lat][lon][startdate + timedelta(seconds=tick*30)] = tec
+    return convion
+
+def compare(tecs, convdmap, startdate):
+    for (lat, lon, tick) in tecs.keys():
+        time = startdate + timedelta(seconds=tick*30)
+        if time in convdmap[lat][lon]:
+            print((lat, lon, tick), convdmap[lat][lon][time], tecs[(lat, lon, tick)])
 
 def parse_ionmap(fname):
     f = open(fname)

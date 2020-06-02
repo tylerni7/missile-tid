@@ -20,9 +20,9 @@ C = constants.SPEED_OF_LIGHT
 #  and galileo is more complicated and needs l5a and l5b
 #  so ignore this for anything but GPS...
 F_lookup = {
-    'R':(constants.GLONASS_L1, constants.GLONASS_L2),
-    'G':(constants.GPS_L1, constants.GPS_L2),
-    'E':(constants.l1, constants.l5)
+    'R':(constants.GLONASS_L1, constants.GLONASS_L2, constants.GLONASS_L5),
+    'G':(constants.GPS_L1, constants.GPS_L2, constants.GPS_L5),
+    'E':(constants.l1, constants.l5, math.nan)
 }
 
 def correct_tec(tec_entry, rcvr_bias=0, sat_bias=0):
