@@ -40,7 +40,7 @@ def get_satellite_delays(dog, date):
 
 def data_for_station(dog, station_name, date=None):
     """
-    Get data from a particular station and time.
+    Get data from a particular station and time. Wraps a number of laika function calls.
     Station names are CORS names (eg: 'slac')
     Dates are datetimes (eg: datetime(2020,1,7))
     """
@@ -59,6 +59,14 @@ def data_for_station(dog, station_name, date=None):
 # from
 # receiver -> tick -> measurement
 def station_transform(station_data, start_dict=None, offset=0):
+    '''
+    Input station_data object has many interleaved observations from different satelites. Need to organize them
+    into dicts grouped by satellite.
+    :param station_data:
+    :param start_dict:
+    :param offset:
+    :return:
+    '''
     # TODO GPS only
     if start_dict is None:
         ret = {'G%02d' % i: defaultdict() for i in range(1, 33)}
@@ -77,6 +85,14 @@ def empty_factory():
     return None
 
 def populate_data(dog, start_date, duration, stations):
+    '''
+    Uses laika to retrieve station data for a particular time interval and set of stations.
+    :param dog: laika AstroDog object
+    :param start_date: python datetime object
+    :param duration: python timedelta object
+    :param stations: python list of strings representing individual stations.
+    :return:
+    '''
     station_locs = {}
     station_data = {}
     for station in stations:
@@ -95,7 +111,6 @@ def populate_data(dog, start_date, duration, stations):
         date = start_date
         while date < start_date + duration:
             try:
-
                 loc, data = data_for_station(dog, station, date)
                 station_data[station] = station_transform(
                                             data,
@@ -112,14 +127,28 @@ def populate_data(dog, start_date, duration, stations):
 
 
 def get_vtec_data(dog, station_locs, station_data, conn_map=None, biases=None):
-    station_vtecs = defaultdict(dict)
+    '''
+    Iterates over (station, PRN) pairs and computes the VTEC for each one. VTEC here takes the form of a tuple of
+    lists in the form: (locs, dats, slants) where each one is a list of values of length max-tick-for-station-prn.
+    In other words, for every tick in the range of ticks seen for the (station, PRN) pair, we have a (loc, dat, slant)
+    triple, although they are each in their own vector.
+    Here 'loc' is the location of the ionosphere starting point. 'data' is the vtec calculation, and 'slatn' is the
+    slant_to_vertical conversion factor.
+    :param dog:
+    :param station_locs:
+    :param station_data:
+    :param conn_map:
+    :param biases:
+    :return:
+    '''
+    station_vtecs = defaultdict(dict)   # The eventual output
     def vtec_for(station, prn, conns=None, biases=None):
         if biases:
             station_bias = biases.get(station, 0)
             sat_bias = biases.get(prn, 0)
         else:
             station_bias, sat_bias = 0, 0
-
+        # Only bother if the particular (station, prn) has not been done yet:
         if prn not in station_vtecs[station]:
             dats = []
             locs = []
@@ -128,7 +157,7 @@ def get_vtec_data(dog, station_locs, station_data, conn_map=None, biases=None):
                 end = max(station_data[station][prn].keys())
             else:
                 end = 0
-            for i in range(end):
+            for i in range(end):    # iterate over integers in the range of ticks
                 measurement = station_data[station][prn][i]
                 # if conns specified, require ambiguity data
                 if conns:
@@ -176,6 +205,7 @@ def get_vtec_data(dog, station_locs, station_data, conn_map=None, biases=None):
     for station in station_data.keys():
         print(station)
         for recv in ['G%02d' % i for i in range(1, 33)]:
+            # Use the connection map if we have it, otherwise don't.
             if conn_map:
                 vtec_for(station, recv, conns=conn_map[station][recv], biases=biases)
             else:

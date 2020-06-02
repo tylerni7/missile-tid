@@ -32,12 +32,15 @@ def correct_tec(tec_entry, rcvr_bias=0, sat_bias=0):
 
 def calc_vtec(dog, rec_pos, measurement, ionh=IONOSPHERE_H, el_cut=0.30, n1=0, n2=0, rcvr_bias=0, sat_bias=0):
     """
-    Given a receiver position and measurement from a specific sv
-    this calculates the vertical TEC, and the point at which
-    that TEC applies (between the sat and the rec)
+    Given a receiver position and measurement from a specific sv this calculates the vertical TEC, and the point
+    at which that TEC applies (between the sat and the rec). Checks to see whether the satellite is too low in
+    the sky and returns None if so.
+
+    Returns: ( ... , ... , ... )
     """
     if measurement is None:
         return None
+    # Calculate the slant TEC.
     stec = calc_tec( 
         measurement,
         n1=n1, n2=n2, 
@@ -59,8 +62,13 @@ def calc_vtec(dog, rec_pos, measurement, ionh=IONOSPHERE_H, el_cut=0.30, n1=0, n
     return stec * s_to_v, ion_loc(rec_pos, measurement.sat_pos), s_to_v
 
 def s_to_v_factor(el, ionh=IONOSPHERE_H):
+    '''
+    Converts between S and V. (Slant and Vertical?)
+    :param el:
+    :param ionh:
+    :return:
+    '''
     return math.sqrt(1 - (math.cos(el) * constants.EARTH_RADIUS / ionh) ** 2)
-
 
 def ion_loc(rec_pos, sat_pos):
     """
@@ -117,10 +125,16 @@ def calc_carrier_delay(measurement, n1=0, n2=0, rcvr_bias=0, sat_bias=0):
 
 
 def calc_tec(measurement, n1=0, n2=0, rcvr_bias=0, sat_bias=0):
-    """
-    Calculates the slant TEC for a set of observable
-    or None if we are missing required observable
-    """
+    '''
+    Calculates the slant TEC for a set of observable or None if we are missing required observable. End result here
+    is (Carrier Phase Difference) X (Carrier Delay Factor) / K.
+    :param measurement:
+    :param n1:
+    :param n2:
+    :param rcvr_bias:
+    :param sat_bias:
+    :return:
+    '''
     if measurement is None:
         return None
     
@@ -138,6 +152,8 @@ def calc_tec(measurement, n1=0, n2=0, rcvr_bias=0, sat_bias=0):
 
 def melbourne_wubbena(measurement):
     """
+    Melbourne-Wubbena Combination:  (Carrier-Phase Widelane - Code-Phase Narrowlane)
+                                    (\phi_WL - R_NL)
     Wide lane measurement, should not change "much" for GPS, except
     due to cycle slips.
     GLONASS is different though... and this doesn't work so well
@@ -154,8 +170,11 @@ def melbourne_wubbena(measurement):
 
 def wide_lane(measurement):
     """
+    For Carrier-Phase (cycles): \phi_WL = (\phi_1 * f_1 - \phi_2 * f_2) / (f_1 - f_2)
+           Code-Phase:
     Wide lane measurement: acts as measurement with wider wavelength
-    used for ambiguity correction
+        used for ambiguity correction
+    Note: This function returns carrier-phase Widelane denominated in meters, not cycles
     """
     if measurement is None:
         return None

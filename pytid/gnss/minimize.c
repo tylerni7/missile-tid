@@ -133,12 +133,29 @@ double brute_force_dd2(int dd, double wavelength, double *Bs, int *ns) {
     return min;
 }
 
+
+/*
+ * Function: brute_force_dd
+ * Args:
+ *      int dd:
+ *      double wavelength:
+ *      double *Bs: Bias values for R1S1, R1S2, R2S1, R2S2
+ *      int *ns:    Ambiguity values for R1S1, ..., respectively. Initially
+ *                  a vector of 0s but populated by this function.
+ *
+ * Notes:
+ *      Minimizes the SSE function and returns the arguments that did it.
+ *      Combs a grid and evaluates the SSE for a particular set of 4 N_i.
+ *      values.
+ *          SSE = Sum_(i=1)^4 (\lambda * N_i - Bias_i)^2
+ * */
 double brute_force_dd(int dd, double wavelength, double *Bs, int *ns) {
     int in1, in2, in3;
     int n1, n2, n3, n4;
     double min = 10000;
     double err, tmp;
 
+    // Searching over a 3D grid of coordinates. Grid width = 2*SEARCH_SIZE
     for (in1 = 1; in1 < 2*SEARCH_SIZE; in1++) {
         // search 0, 1, -1, 2, -2, 3, -3...
         n1 = ((in1&1)?-1:1) * (in1 >> 1);
@@ -158,6 +175,7 @@ double brute_force_dd(int dd, double wavelength, double *Bs, int *ns) {
                 tmp = wavelength * n4 - Bs[3];
                 err += tmp*tmp;
 
+                // If we hit a new low in error, record everything.
                 if (err < min) {
                     min = err;
                     ns[0] = n1;
