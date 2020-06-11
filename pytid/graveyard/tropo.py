@@ -4,6 +4,7 @@ ESA_GNSS-Book_TM-23_Vol_Ip section 5.4.2
 """
 from laika.lib import coordinates
 import numpy
+import math
 
 
 # ESA GNSS VolI tbl 5.2 + 5.3 : Coefficients of the wet mapping function

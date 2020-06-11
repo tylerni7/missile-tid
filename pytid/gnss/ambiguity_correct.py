@@ -1,5 +1,7 @@
+from collections.abc import Iterable
 import ctypes
 from itertools import product
+import functools
 import math
 import numpy
 
@@ -55,8 +57,11 @@ def double_difference(calculator, station_data, sta1, sta2, prn1, prn2, tick):
 
     if any([v is None for v in {v11, v12, v21, v22}]):
         return math.nan
-    
-    return (v11[0] - v12[0]) - (v21[0] - v22[0])
+
+    if isinstance(v11, Iterable):
+        return (v11[0] - v12[0]) - (v21[0] - v22[0])
+    else:
+        return (v11 - v12) - (v21 - v22)
 
 def bias(signal):
     def f(meas):
@@ -108,7 +113,7 @@ def widelane_ambiguity(station_data, sta1, sta2, prn1, prn2, tick):
 
     if math.isnan(diff):
         return diff
-    
+
     lambda_w = lambda_ws[station_data[sta1][prn1][tick].prn[0]]
     return diff / lambda_w
 
@@ -125,8 +130,8 @@ def lambda_solve(ddn1, ddn2, ws, station_data, sta1, sta2, prn1, prn2, all_ticks
             B_i_samples.append( B_i(station_data[sta][prn][tick])[0] )
         #print(numpy.mean(B_i_samples), numpy.std(B_i_samples))
         Bis.append(B_i_samples)
-    
-    # Φ - R = B + err with B = 
+
+    # Φ - R = B + err with B =
 
     Q = numpy.cov(Bis[:3])
 
@@ -165,7 +170,7 @@ def geometry_free_solve(ddn1, ddn2, ws, station_data, sta1, sta2, prn1, prn2, ti
 
     # Φ_i - R_i = B_i + err  with B_i = b_i + λ_1*N_1 - λ_2*N_2
     B_i = bias(tec.geometry_free)
-    
+
     Bis = [0, 0, 0, 0]
 
     for i, (sta, prn) in enumerate(product([sta1, sta2], [prn1, prn2])):
@@ -204,11 +209,6 @@ def geometry_free_solve(ddn1, ddn2, ws, station_data, sta1, sta2, prn1, prn2, ti
     """
     return [(n1s[i], n2s[i]) for i in range(4)], ws_ints, 0, 0, 0
 
-def rho(station_locs, station_data, station, prn, tick):
-    if station_data[station][prn][tick].corrected:
-        return numpy.linalg.norm(station_locs[station] - station_data[station][prn][tick].sat_pos_final)
-    else:
-        return numpy.linalg.norm(station_locs[station] - station_data[station][prn][tick].sat_pos)
 
 def solve_ambiguities(station_locs, station_data, sta1, sta2, prn1, prn2, ticks):
     # initialize wavelengths for this frequency band
@@ -249,7 +249,7 @@ def solve_ambiguities(station_locs, station_data, sta1, sta2, prn1, prn2, ticks)
         if math.isnan(w):
             continue
         widelane_dds.append(w)
-    
+
     widelane_dd = numpy.mean(widelane_dds)
     #print("wideland double difference: {0:0.3f} +/- {1:0.4f}".format(
     #    widelane_dd, numpy.std(widelane_dds)
@@ -287,7 +287,7 @@ def solve_ambiguity(station_data, sta, prn, ticks):
                 obs(tick, 'C1C')/lambda_1 + obs(tick, 'C2C')/lambda_2
             )
         )
-    
+
         n1ests.append(
             obs(tick, 'L1C')
             + 1 / (freq_2**2 - freq_1**2) * (
@@ -302,145 +302,175 @@ def solve_ambiguity(station_data, sta, prn, ticks):
     return n1, n2
 
 
-def solve_ambiguity_lsq_2chan(station_locs, station_data, sta, prn, ticks):
-    freq_1, freq_2, _ = tec.F_lookup[prn[0]]
-    lambda_1 = lambda_1s[prn[0]]
-    lambda_2 = lambda_2s[prn[0]]
+def rho(station_locs, station_data, station, prn, tick):
+    if station_data[station][prn][tick].corrected:
+        return numpy.linalg.norm(station_locs[station] - station_data[station][prn][tick].sat_pos_final)
+    else:
+        return numpy.linalg.norm(station_locs[station] - station_data[station][prn][tick].sat_pos)
 
-
-    def obs(tick, chan):
-        return station_data[sta][prn][tick].observables.get(chan, math.nan)
-
-    chan2 = 'C2C' if not math.isnan(obs(ticks[0], 'C2C')) else 'C2P'
-
-    n21ests = []
-    n1ests = []
-    for tick in ticks:
-        # see GNSS hofmann-wellenhof, lichtenegger, wasle eq 7.31
-        n21ests.append(
-            (obs(tick, 'L1C') - obs(tick, 'L2C'))
-            - (freq_1 - freq_2)/(freq_1 + freq_2) * (
-                obs(tick, 'C1C')/lambda_1 + obs(tick, chan2)/lambda_2
-            )
-        )
-
-    # estimate of n1 - n2
-    n21 = round(numpy.mean(n21ests))
-
-    y = numpy.zeros((4 * len(ticks), 1))
-    A = numpy.zeros((4 * len(ticks), 3))
-
-    for i, tick in enumerate(ticks):
-        # see GNSS hofmann-wellenhof, lichtenegger, wasle eq 5.76 and 7.27
-        distance = rho(station_locs, station_data, sta, prn, tick)
-        y[i*4 + 0][0] = obs(tick, 'L1C') - distance / lambda_1
-        y[i*4 + 1][0] = obs(tick, 'L2C') - distance / lambda_2 + n21
-        y[i*4 + 2][0] = obs(tick, 'C1C') / lambda_1 - distance / lambda_1
-        y[i*4 + 3][0] = obs(tick, chan2) / lambda_2 - distance / lambda_2
-
-        # x has the format [n1, a_0, b_0, a_1, b_1, ... a_n, b_n]
-        A[i*4 + 0][0] = 1
-        A[i*4 + 0][1] = freq_1
-        A[i*4 + 0][2] = -1/freq_1
-
-        A[i*4 + 1][0] = 1
-        A[i*4 + 1][1] = freq_2
-        A[i*4 + 1][2] = -1/freq_2
-
-        A[i*4 + 2][1] = freq_1
-        A[i*4 + 2][2] = 1/freq_1
-
-        A[i*4 + 3][1] = freq_2
-        A[i*4 + 3][2] = 1/freq_2
-
-    #return numpy.linalg.lstsq(A, y)
-
-    a, _, _, _ = numpy.linalg.lstsq(A, y, rcond=None)
-    return round(a[0][0]), round(a[0][0]) - n21 
-
-
-def solve_ambiguity_lsq_3chan(station_locs, station_data, sta, prn, ticks):
+def obs_factory(station_data, station_clock_biases, sta, prn):
     freq_1, freq_2, freq_5 = tec.F_lookup[prn[0]]
-    lambda_1 = lambda_1s[prn[0]]
-    lambda_2 = lambda_2s[prn[0]]
-    lambda_5 = lambda_5s[prn[0]]
-
-
     def obs(tick, chan):
-        return station_data[sta][prn][tick].observables.get(chan, math.nan)
+        res = station_data[sta][prn][tick].observables.get(chan, math.nan)
+        if math.isnan(res) and res == 'C2C':
+            res = station_data[sta][prn][tick].observables.get('C2P', math.nan)
+        clock_err = getattr(station_data[sta][prn][tick], "sat_clock_err")
+        clock_err += station_clock_biases[sta][tick]
+        if chan[0] == 'C':
+            return res + clock_err * tec.C
+        elif chan == 'L1C':
+            return res + clock_err * freq_1
+        elif chan == 'L2C':
+            return res + clock_err * freq_2
+        elif chan == 'L5C':
+            return res + clock_err * freq_5
+    return obs
 
-    chan2 = 'C2C' if not math.isnan(obs(ticks[0], 'C2C')) else 'C2P'
 
-    n21ests = []
-    n32ests = []
-    for tick in ticks:
-        # see GNSS hofmann-wellenhof, lichtenegger, wasle eq 7.31
-        n21ests.append(
-            (obs(tick, 'L1C') - obs(tick, 'L2C'))
-            - (freq_1 - freq_2)/(freq_1 + freq_2) * (
-                obs(tick, 'C1C')/lambda_1 + obs(tick, chan2)/lambda_2
-            )
+def construct_lsq_matrix(
+    distance, obs, freqs, ticks,
+    fix_diff=None, single_param=True
+):
+    """
+    Generic function to make LSQ matrices for solving ambiguities
+
+    distance: function from tick to distance parameter
+    obs: function from tick, channel to observation
+    freqs: the two (or three) frequencies
+    ticks: the ticks for which we should get data
+    fix_diff: optional int tuple. If present it is the (n1-n2, ) value
+        (widelane ambiguity). Or for 3 freq the (n1-n2, n1-n3) values
+        if None, don't assume a fixed difference
+    single_param: if set, use just one A and B value. Otherwise one per tick
+
+    returns: A, y the matrices for lsq stuff.
+    """
+
+    assert 2 <= len(freqs) <= 3, "must specify 2 or 3 frequencies"
+    if fix_diff:
+        assert len(fix_diff) + 1 == len(freqs), "fixed differences have inconsistent length"
+
+    meas_per_tick = 2 * len(freqs)
+    lambdas = [tec.C / f for f in freqs]
+
+    ns_to_find = (len(freqs) if fix_diff is None else 1)
+    param_coef = 0 if single_param else 2
+
+    y = numpy.zeros(meas_per_tick * len(ticks))
+    A = numpy.zeros((
+        meas_per_tick * len(ticks),
+        (
+            ns_to_find  # how many N values to find
+            + 2*(1 if single_param else len(ticks))  # a,b values to find
         )
-        n32ests.append(
-            (obs(tick, 'L2C') - obs(tick, 'L5C'))
-            - (freq_2 - freq_5)/(freq_2 + freq_5) * (
-                obs(tick, chan2)/lambda_2 + obs(tick, 'C5C')/lambda_5
-            )
-        )
-
-    # estimate of n1 - n2
-    n21 = round(numpy.mean(n21ests))
-    n32 = round(numpy.mean(n32ests))
-
-    y = numpy.zeros((6 * len(ticks), 1))
-    A = numpy.zeros((6 * len(ticks), 3))
+    ))
 
     for i, tick in enumerate(ticks):
         # see GNSS hofmann-wellenhof, lichtenegger, wasle eq 5.76 and 7.27
-        distance = rho(station_locs, station_data, sta, prn, tick)
-        y[i*4 + 0][0] = obs(tick, 'L1C') - distance / lambda_1 - n21
-        y[i*4 + 1][0] = obs(tick, 'L2C') - distance / lambda_2
-        y[i*4 + 2][0] = obs(tick, 'L5C') - distance / lambda_5 + n32
-        y[i*4 + 3][0] = obs(tick, 'C1C') / lambda_1 - distance / lambda_1
-        y[i*4 + 4][0] = obs(tick, chan2) / lambda_2 - distance / lambda_2
-        y[i*4 + 5][0] = obs(tick, 'C5C') / lambda_5 - distance / lambda_5
+        rho = distance(tick)
+        y[i*meas_per_tick + 0] = obs(tick, 'L1C') - rho / lambdas[0]
+        y[i*meas_per_tick + 1] = obs(tick, 'L2C') - rho / lambdas[1] + (fix_diff[0] if fix_diff else 0)
+        y[i*meas_per_tick + 2] = obs(tick, 'C1C') / lambdas[0] - rho / lambdas[0]
+        y[i*meas_per_tick + 3] = obs(tick, 'C2C') / lambdas[1] - rho / lambdas[1]
+        if len(freqs) == 3:
+            y[i*meas_per_tick + 4] = obs(tick, 'L5C') - rho / lambdas[2] + (fix_diff[1] if fix_diff else 0)
+            y[i*meas_per_tick + 5] = obs(tick, 'C5C') / lambdas[2] - rho / lambdas[2]
 
-        # x has the format [n1, a_0, b_0, a_1, b_1, ... a_n, b_n]
-        A[i*4 + 0][0] = 1
-        A[i*4 + 0][1] = freq_1
-        A[i*4 + 0][2] = -1/freq_1
+        # x has the format [n1, ?n2, ?n3, (a, b|a_0, b_0, a_1, ... a_n, b_n)]
+        A[i*meas_per_tick + 0][0] = 1
+        A[i*meas_per_tick + 0][ns_to_find + param_coef * i] = freqs[0]
+        A[i*meas_per_tick + 0][ns_to_find + 1 + param_coef * i] = -1/freqs[0]
 
-        A[i*4 + 1][0] = 1
-        A[i*4 + 1][1] = freq_2
-        A[i*4 + 1][2] = -1/freq_2
+        A[i*meas_per_tick + 1][1 if fix_diff is None else 0] = 1
+        A[i*meas_per_tick + 1][ns_to_find + param_coef * i] = freqs[1]
+        A[i*meas_per_tick + 1][ns_to_find + 1 + param_coef * i] = -1/freqs[1]
 
-        A[i*4 + 2][0] = 1
-        A[i*4 + 2][1] = freq_5
-        A[i*4 + 2][2] = -1/freq_5
+        A[i*meas_per_tick + 2][ns_to_find + param_coef * i] = freqs[0]
+        A[i*meas_per_tick + 2][ns_to_find + 1 + param_coef * i] = 1/freqs[0]
 
-        A[i*4 + 3][1] = freq_1
-        A[i*4 + 3][2] = 1/freq_1
+        A[i*meas_per_tick + 3][ns_to_find + param_coef * i] = freqs[1]
+        A[i*meas_per_tick + 3][ns_to_find + 1 + param_coef * i] = 1/freqs[1]
 
-        A[i*4 + 4][1] = freq_2
-        A[i*4 + 4][2] = 1/freq_2
+        if len(freqs) == 3:
+            A[i*meas_per_tick + 4][2 if fix_diff is None else 0] = 1
+            A[i*meas_per_tick + 4][ns_to_find + param_coef * i] = freqs[2]
+            A[i*meas_per_tick + 4][ns_to_find + 1 + param_coef * i] = -1/freqs[2]
 
-        A[i*4 + 5][1] = freq_5
-        A[i*4 + 5][2] = 1/freq_5
+            A[i*meas_per_tick + 4][ns_to_find + param_coef * i] = freqs[2]
+            A[i*meas_per_tick + 4][ns_to_find + 1 + param_coef * i] = 1/freqs[2]
 
-    #return numpy.linalg.lstsq(A, y)
+    return A, y
 
-    a, _, _, _ = numpy.linalg.lstsq(A, y, rcond=None)
-    return round(a[0][0]) + n21, round(a[0][0]), round(a[0][0]) - n32
 
-def solve_ambiguity_lsq(station_locs, station_data, sta, prn, ticks):
-    def obs(tick, chan):
-        return station_data[sta][prn][tick].observables.get(chan, math.nan)
+def est_widelane(obs, chans, freqs, ticks):
+    ests = []
+    lambdas = [tec.C / f for f in freqs]
+
+    for tick in ticks:
+        # see GNSS hofmann-wellenhof, lichtenegger, wasle eq 7.31
+        ests.append(
+            (obs(tick, chans[0][0]) - obs(tick, chans[0][1]))
+            - (freqs[0] - freqs[1])/(freqs[0] + freqs[1]) * (
+                obs(tick, chans[1][0])/lambdas[0] + obs(tick, chans[1][1])/lambdas[1]
+            )
+        )
+    return round(numpy.mean(ests))
+
+
+def solve_ambiguity_lsq(station_locs, station_data, station_clock_biases, sta, prn, ticks):
+    freq_1, freq_2, freq_5 = tec.F_lookup[prn[0]]
+
+    obs = obs_factory(station_data, station_clock_biases, sta, prn)
+
+    n21 = est_widelane(obs, (('L1C', 'L2C'), ('C1C', 'C2C')), (freq_1, freq_2), ticks)
+
+    distance_func = functools.partial(rho, station_locs, station_data, sta, prn)
 
     if not math.isnan(obs(ticks[0], 'C5C')):
-        # if we have chan 5 data, use it
-        res0 = solve_ambiguity_lsq_2chan(station_locs, station_data, sta, prn, ticks)
-        res1 = solve_ambiguity_lsq_3chan(station_locs, station_data, sta, prn, ticks)[:2]
-        print("3 channels for", sta, prn, list(ticks)[0], "ress", res0, res1)
-        return res1
+        use_l5 = True
+        n31 = est_widelane(obs, (('L1C', 'L5C'), ('C1C', 'C5C')), (freq_1, freq_5), ticks)
     else:
-        return solve_ambiguity_lsq_2chan(station_locs, station_data, sta, prn, ticks)
+        use_l5 = False
+
+    A, y = construct_lsq_matrix(
+        distance_func,
+        obs,
+        (freq_1, freq_2, freq_5) if use_l5 else (freq_1, freq_2),
+        ticks,
+        fix_diff=(n21,n31) if use_l5 else (n21,),
+        single_param=True
+    )
+
+    a, _, _, _ = numpy.linalg.lstsq(A, y, rcond=None)
+
+    return round(a[0]), round(a[0]) - n21
+
+def solve_dd_ambiguity_lsq(station_locs, station_data, station_clock_biases, group):
+    freq_1, freq_2, _ = tec.F_lookup[group.prn1[0]]
+
+    def obs(tick, chan):
+        def get_meas_obs(meas):
+            res = meas.observables.get(chan, math.nan)
+            if math.isnan(res) and chan == 'C2C':
+                return meas.observables.get('C2P', math.nan)
+            return res
+        return group.double_difference(get_meas_obs)
+
+    n21 = est_widelane(obs, (('L1C', 'L2C'), ('C1C', 'C2C')), (freq_1, freq_2), group.ticks)
+
+    # distance doesn't matter for double difference
+    distance_func = lambda x:0
+
+    A, y = construct_lsq_matrix(
+        distance_func,
+        obs,
+        (freq_1, freq_2),
+        group.ticks,
+        #fix_diff=(n21,),
+        single_param=True
+    )
+
+    a, _, _, _ = numpy.linalg.lstsq(A, y, rcond=None)
+
+    return round(a[0]), round(a[1]) # - n21
+    pass

@@ -52,7 +52,7 @@ class Connection:
     def filter_ticks(self, this_data):
         if self.ticks is not None:
             return
-        
+
         self.ticks = []
         last_seen = self.tick0
         last_mw = None
@@ -92,7 +92,7 @@ class Connection:
 
             # all good
             self.ticks.append(tick)
-        
+
         if self.ticks:
             self.tick0 = self.ticks[0]
             self.tickn = self.ticks[-1]
@@ -100,6 +100,79 @@ class Connection:
             self.ticks = [tick]
             self.tick0 = tick
             self.tickn = tick
+
+
+class Group:
+    """
+    Two stations and two satellites such that all station X prn pairs have a connection
+    """
+    def __init__(self, station_data, connections):
+        self.station_data = station_data
+        self.connections = sorted(connections, key=lambda x:(x.station, x.prn))
+        self.station1 = self.connections[0].station
+        self.station2 = self.connections[2].station
+        self.prn1 = self.connections[0].prn
+        self.prn2 = self.connections[1].prn
+        self.ticks = list(set.intersection(*[set(c.ticks) for c in connections]))
+
+    def double_differences(self, calculator):
+        return [
+            ambiguity_correct.double_difference(
+                calculator,
+                self.station_data,
+                self.station1,
+                self.station2,
+                self.prn1,
+                self.prn2,
+                tick
+            ) for tick in self.ticks
+        ]
+
+    def double_difference(self, calculator):
+        return numpy.mean([
+            ambiguity_correct.double_difference(
+                calculator,
+                self.station_data,
+                self.station1,
+                self.station2,
+                self.prn1,
+                self.prn2,
+                tick
+            ) for tick in self.ticks
+        ])
+
+    @property
+    def ddn1(self):
+        return (
+            self.connections[0].n1
+            - self.connections[1].n1
+            - self.connections[2].n1
+            + self.connections[3].n1
+        )
+
+    @property
+    def ddn2(self):
+        return (
+            self.connections[0].n2
+            - self.connections[1].n2
+            - self.connections[2].n2
+            + self.connections[3].n2
+        )
+
+    @property
+    def ddwide(self):
+        return self.ddn1 - self.ddn2
+
+    @property
+    def ddnarrow(self):
+        return self.ddn1 + self.ddn2
+
+    def __repr__(self):
+        return (
+            f"< {self.station1}-{self.station2} "
+            f"{self.prn1}-{self.prn2} "
+            f"[{self.ticks[0]}-{self.ticks[-1]}] >"
+        )
 
 
 def make_connections(dog, station_locs, station_data, station, prn, tick0, tickn):
@@ -144,7 +217,7 @@ def get_connections(dog, station_locs, station_data, skip=None):
             )
     return connections
 
-def get_groups(connections):
+def get_groups(station_data, connections):
     """
     return lists of connection groups with 4 connections from
     2 stations and 2 satellites, and overlapping times
@@ -161,7 +234,7 @@ def get_groups(connections):
                 if tick in con.ticks:
                     res.append(con)
         return res
-    
+
     def connections_to(candidates, prn):
         res = set()
         for con in candidates:
@@ -209,10 +282,10 @@ def get_groups(connections):
             if not partners:
                 # alone this tick
                 continue
-            groups.append( partners | set([con]) )
+            groups.append( Group(station_data, partners | set([con])) )
             unpaired -= partners
             unpaired.remove(con)
-    
+
     return groups, unpaired
 
 diffs = []
@@ -249,7 +322,7 @@ def correct_groups(station_locs, station_data, groups):
         bads += correct_group(station_locs, station_data, group)
     print( numpy.mean(diffs), bads )
 
-def correct_conns(station_locs, station_data, conns):
+def correct_conns(station_locs, station_data, station_clock_biases, conns):
     print("correcting integer ambiguities")
     for i, conn in enumerate(conns):
         if i % 50 == 0:
@@ -261,11 +334,18 @@ def correct_conns(station_locs, station_data, conns):
             and not math.isnan(conn.n2)
         ):
             continue
-        n1, n2 = ambiguity_correct.solve_ambiguity_lsq(station_locs, station_data, conn.station, conn.prn, conn.ticks)
+        n1, n2 = ambiguity_correct.solve_ambiguity_lsq(
+            station_locs,
+            station_data,
+            station_clock_biases,
+            conn.station,
+            conn.prn,
+            conn.ticks
+        )
         conn.n1 = n1
         conn.n2 = n2
     print()
-    
+
 
 def empty_factory():
     return None
@@ -284,12 +364,12 @@ def make_conn_map(connections):
     for conn in connections:
         for tick in conn.ticks:
             conn_map[conn.station][conn.prn][tick] = conn
-    
+
     return conn_map
 
 def solved_conn_map(dog, station_locs, station_data):
     conns = get_connections(dog, station_locs, station_data)
-    groups, unpaired = get_groups(conns)
+    groups, unpaired = get_groups(station_data, conns)
     print(len(unpaired), "unpaired")
     correct_groups(station_locs, station_data, groups)
     return make_conn_map(conns)

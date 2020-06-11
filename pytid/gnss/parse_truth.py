@@ -8,6 +8,8 @@ from datetime import datetime, timedelta
 import numpy
 import re
 
+from laika.lib import coordinates
+
 fname = "/home/tyler/projects/acw/tec_ground_truth_2020_feb_17.20i"
 
 
@@ -29,7 +31,7 @@ def read_ionomap(f):
         header = f.readline().strip()
         if header.endswith("END OF TEC MAP"):
             return date, ion
-        
+
         assert header.endswith("LAT/LON1/LON2/DLON/H")
         match = re.match("\s*(-?\d+\.\d+)" * 5 + ".*", header)
         lat, lon1, lon2, dlon, h = [float(x) for x in match.groups()]
@@ -93,5 +95,17 @@ def parse_ionmap(fname):
             continue
         date, iondat = res
         ion[date] = iondat
-    
+
     return ion
+
+def est_tec(ionmap, startdate, tick, pos):
+    # round time to 15 minutes
+    time = tick * 30
+    rounded_minutes = round(time / (15 * 60)) * (15)
+    obs_time = startdate + timedelta(minutes=rounded_minutes)
+
+    lat, lon, _ = coordinates.ecef2geodetic(pos)
+    rlat = round(lat / 2.5) * 2.5
+    rlon = round(lat / 5) * 5
+
+    return ionmap[obs_time][rlat][rlon]

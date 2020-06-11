@@ -111,6 +111,46 @@ def populate_data(dog, start_date, duration, stations):
     return station_locs, station_data
 
 
+def get_station_clock_biases(dog, station_locs, station_data):
+    """
+    Figure out the clock bias for the station at each tick.
+    For each tick, take the satellite position - station position, and after
+    correcting for the satellite bias, assume the remainder is receiver bias.
+    Average it out a bit
+    """
+    clock_biases = dict()
+    for station in station_data:
+        clock_biases[station] = dict()
+        sats = ['G%02d'%i for i in range(1, 33)]
+        max_tick = max(max(station_data[station][prn].keys(), default=0) for prn in sats)
+        for tick in range(max_tick):
+            diffs = []
+            for prn in sats:
+                if station_data[station][prn][tick] is None:
+                    continue
+                if math.isnan(station_data[station][prn][tick].observables['C1C']):
+                    continue
+                if not station_data[station][prn][tick].corrected:
+                    station_data[station][prn][tick].correct(
+                        station_locs[station],
+                        dog
+                    )
+                if math.isnan(station_data[station][prn][tick].sat_pos_final[0]):
+                    continue
+                diffs.append(
+                    (
+                        numpy.linalg.norm(
+                            station_data[station][prn][tick].sat_pos_final
+                            - station_locs[station]
+                        ) - station_data[station][prn][tick].observables['C1C']
+                    ) / tec.C - station_data[station][prn][tick].sat_clock_err
+                )
+                assert not math.isnan(diffs[-1])
+            if diffs:
+                clock_biases[station][tick] = numpy.mean(diffs)
+    return clock_biases
+
+
 def get_vtec_data(dog, station_locs, station_data, conn_map=None, biases=None):
     station_vtecs = defaultdict(dict)
     def vtec_for(station, prn, conns=None, biases=None):
