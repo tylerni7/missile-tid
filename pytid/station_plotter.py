@@ -9,26 +9,40 @@ from pytid.gnss import bias_solve, connections, get_data, plot
 conf = Configuration()
 
 dog = AstroDog(cache_dir=conf.gnss.get("cache_dir"))
+_LOG = logging.getLogger(__name__)
 
-
-def collect_and_plot(start_date: datetime, duration: timedelta, logger: logging.Logger):
-    stations = conf.gnss.get("stations")
-
-    # ask Laika for station location data + GNSS data from our stations
-    logger.info("Gathering GNSS data from stations...")
-    station_locs, station_data = get_data.populate_data(dog, start_date, duration, stations)
-
-    # turn our station data into "connections" which are periods of
-    # signal lock without cycle slips
-    logger.info("Reorganizing data into connections")
-    conns = connections.get_connections(dog, station_locs, station_data)
-    # then organize it so it's easier to look up
-    print("organising")
-    conn_map = connections.make_conn_map(conns)
+def collect_and_plot(start_date: datetime, duration: timedelta, logger: logging.Logger = _LOG):
+    conns, station_data, station_locs, stations = get_station_connection_data(duration, logger, start_date)
 
     # attempt to solve integer ambiguities
     logger.info("Solving ambiguities")
     connections.correct_conns(station_locs, station_data, conns)
+
+    corrected_vtecs, sat_biases, rcvr_biases, tecs, cal_dat, station_vtecs, conn_map = \
+        post_ambiguity_computation(conns, logger, station_data, station_locs)
+
+    plot_stations(corrected_vtecs, logger, start_date, stations)
+
+
+def plot_stations(corrected_vtecs, start_date, stations, logger = _LOG, suffix = None):
+    logger.info("Plotting data")
+    plotter = plot.StationPlotter(vtecs=corrected_vtecs, date=start_date, filename_suffix=suffix)
+    for station in stations:
+        plotter.plot_station(station)
+
+
+def post_ambiguity_computation(conns, station_data, station_locs, logger = _LOG):
+    '''
+    This function runs all the computations for plotting that come *after* the ambiguity resolution step.
+    :param conns:
+    :param logger:
+    :param station_data:
+    :param station_locs:
+    :return:
+    '''
+    # then organize it so it's easier to look up
+    print("organising")
+    conn_map = connections.make_conn_map(conns)
 
     # this will get vtec data, accounting for ambiguities but NOT clock biases
     logger.info("Calculating vTEC data")
@@ -47,17 +61,34 @@ def collect_and_plot(start_date: datetime, duration: timedelta, logger: logging.
     # now go back and update our vtecs data...
     logger.info("Correcting vTEC data with biases")
     corrected_vtecs = get_data.correct_vtec_data(station_vtecs, sat_biases, rcvr_biases)
+    return corrected_vtecs, sat_biases, rcvr_biases, tecs, cal_dat, station_vtecs, conn_map
 
-    logger.info("Plotting data")
-    plotter = plot.StationPlotter(vtecs=corrected_vtecs, date=start_date)
-    for station in stations:
-        plotter.plot_station(station)
+
+def get_station_connection_data(duration, start_date, logger = _LOG):
+    '''
+    For a particular duration and start date,
+    :param duration:
+    :param logger:
+    :param start_date:
+    :return:
+    '''
+    stations = conf.gnss.get("stations")
+
+    # ask Laika for station location data + GNSS data from our stations
+    logger.info("Gathering GNSS data from stations...")
+    station_locs, station_data = get_data.populate_data(dog, start_date, duration, stations)
+
+    # turn our station data into "connections" which are periods of
+    # signal lock without cycle slips
+    logger.info("Reorganizing data into connections")
+    conns = connections.get_connections(dog, station_locs, station_data)
+    return conns, station_data, station_locs, stations
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--start-date", "-d", help="The start date for the plot interval (YYYY-mm-dd)")
-    parser.add_argument("--duration-days", "-t", help="The duration in days for the plot", default=1)
+    parser.add_argument("--duration-days", "-t", type=int, help="The duration in days for the plot", default=1)
     parser.add_argument("--log", "-l", help="set the logging level", type=str, default="INFO")
 
     args = parser.parse_args()
