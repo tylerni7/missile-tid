@@ -28,7 +28,7 @@ def contains_needed_info(measurement):
 
 
 class Connection:
-    def __init__(self, dog, station_locs, station_data, station, prn, tick0, tickn):
+    def __init__(self, dog, station_locs, station_data, station, prn, tick0, tickn, filter_ticks=True):
         self.dog = dog
         self.loc = station_locs[station]
         self.station = station
@@ -41,15 +41,26 @@ class Connection:
         self.n1 = None
         self.n2 = None
 
+        # testing, place to hold n_values calculated in various ways
+        self.n12_repo = {}
+
         self.n1s = []
         self.n2s = []
         self.werrs = []
 
         # TODO: this could incorporate phase windup as well?
-
-        self.filter_ticks(station_data[station][prn])
+        if filter_ticks:
+            self.filter_ticks(station_data[station][prn])
 
     def filter_ticks(self, this_data):
+        '''
+        Starts with an assumed 'connection' of length zero at the first time point ('tick'). Runs through the list
+        of ticks (integers) in increasing order. Skips ticks where the satelite elevation was too low. With each tick,
+        judges whether the connection has 'dropped' either due to a) DISCONNECTION, or b) CYCLE_SLIP. If it has dropped,
+        it stops counting and the connection is considered 'complete' (i.e. initialized).
+        :param this_data:
+        :return:
+        '''
         if self.ticks is not None:
             return
 
@@ -93,6 +104,7 @@ class Connection:
             # all good
             self.ticks.append(tick)
 
+        # Update the local property holding the first and last tick:
         if self.ticks:
             self.tick0 = self.ticks[0]
             self.tickn = self.ticks[-1]
@@ -100,6 +112,18 @@ class Connection:
             self.ticks = [tick]
             self.tick0 = tick
             self.tickn = tick
+
+    def set_ticks(self, ticks_filtered):
+        '''
+        Method to set the ticks directly rather than running the filtering method every time.
+        This is mostly so I can load connection objects from saved data without re-running the
+        filtering routine every time.
+        :param ticks_filtered:
+        :return:
+        '''
+        self.ticks = ticks_filtered
+        self.tick0 = self.ticks[0]
+        self.tickn = self.ticks[-1]
 
 
 class Group:
@@ -180,6 +204,7 @@ def make_connections(dog, station_locs, station_data, station, prn, tick0, tickn
     given data and a bunch of ticks, split it up into connections
     """
     def next_valid_tick(tick):
+        '''Gets the next integer above `tick` in the dict station_data[station][prn]'''
         for i in range(tick + 1, tickn):
             if station_data[station][prn][i]:
                 return i
@@ -187,6 +212,8 @@ def make_connections(dog, station_locs, station_data, station, prn, tick0, tickn
 
     connections = []
     ticki = tick0
+    # 1) make a connection from the ticks. If long enough, add to inventory. 2) chop off the ticks consumed. 3) If any
+    #   ticks are left, goto (1).
     while ticki < tickn:
         con = Connection(dog, station_locs, station_data, station, prn, ticki, tickn)
         if not con.ticks:
@@ -198,6 +225,15 @@ def make_connections(dog, station_locs, station_data, station, prn, tick0, tickn
     return connections
 
 def get_connections(dog, station_locs, station_data, skip=None):
+    '''
+    For each (station,satelite), grabs the ticks and GNSS measurements (the innermost dict of station_data) and
+    runs it through "make_connections()" to get a list of Connection objects.
+    :param dog: Astrodog object
+    :param station_locs: dict object keyed by station with gps coords
+    :param station_data: dict of the form : {<station>: { <satelite>: { <tick>: <laika.raw_gnss.GNSSMeasurement>,...}, ...}, ...}
+    :param skip: a list of stations that should be skipped.
+    :return:
+    '''
     connections = []
     for station in station_data.keys():
         if skip and station in skip:
@@ -291,18 +327,25 @@ def get_groups(station_data, connections):
 diffs = []
 
 def correct_group(station_locs, station_data, group):
+    '''
+    Applies the ambiguity correction calculated from a 'group' of station/prns.
+    :param station_locs:
+    :param station_data:
+    :param group:
+    :return:
+    '''
     members = sorted(group, key=lambda x:(x.station, x.prn))
     sta1 = members[0].station
     sta2 = members[2].station
     prn1 = members[0].prn
     prn2 = members[1].prn
 
-    ticks = [members[i].ticks for i in range(4)]
+    ticks = [members[i].ticks for i in range(4)]    # list of lists
     res = ambiguity_correct.solve_ambiguities(station_locs, station_data, sta1, sta2, prn1, prn2, ticks)
     if res is None:
         return True
 
-    bad = res[4]
+    bad = res[4]    # need to figure out what this is...
     for i, (n1, n2) in enumerate(res[0]):
         if members[i].n1:
             diffs.append(abs(members[i].n1 - n1))
@@ -315,6 +358,14 @@ def correct_group(station_locs, station_data, group):
     return bad
 
 def correct_groups(station_locs, station_data, groups):
+    '''
+    Runs every group in 'groups' through the ambiguity correction. This appears to take a long time
+    based on the print statements.
+    :param station_locs:
+    :param station_data:
+    :param groups:
+    :return:
+    '''
     bads = 0
     for i, group in enumerate(groups):
         if i % 50 == 0:
@@ -323,10 +374,20 @@ def correct_groups(station_locs, station_data, groups):
     print( numpy.mean(diffs), bads )
 
 def correct_conns(station_locs, station_data, station_clock_biases, conns):
+    '''
+    Runs the initial least-squares ambiguity correction and gets an initial
+    estimate of n1, n2 (adds it to the connection object).
+    :param station_locs:
+    :param station_data:
+    :param station_clock_biases:
+    :param conns:
+    :return:
+    '''
     print("correcting integer ambiguities")
     for i, conn in enumerate(conns):
         if i % 50 == 0:
             print("completed %d/%d" % (i, len(conns)), end="\r")
+        # If it already has a decent n1 and n2 value, don't bother:
         if (
             conn.n1 is not None
             and not math.isnan(conn.n1)
@@ -344,14 +405,17 @@ def correct_conns(station_locs, station_data, station_clock_biases, conns):
         )
         conn.n1 = n1
         conn.n2 = n2
-    print()
-
 
 def empty_factory():
     return None
 
 def make_conn_map(connections):
-    # make an easy-to-use map
+    '''
+    Make an easy-to-use map. We want to go from (station, receiver (PRN), tick) to the connection object it is a
+    part of.
+    :param connections:
+    :return:
+    '''
     conn_map = {}
     stations = {conn.station for conn in connections}
     # defaultdict can mess with pickle, which we really want for caching...
@@ -368,6 +432,13 @@ def make_conn_map(connections):
     return conn_map
 
 def solved_conn_map(dog, station_locs, station_data):
+    '''
+
+    :param dog: AstroDog object
+    :param station_locs:
+    :param station_data:
+    :return:
+    '''
     conns = get_connections(dog, station_locs, station_data)
     groups, unpaired = get_groups(station_data, conns)
     print(len(unpaired), "unpaired")

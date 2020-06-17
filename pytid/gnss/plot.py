@@ -22,7 +22,7 @@ class StationPlotter:
     Helper class for the plotting of the TEC at each station
     """
 
-    def __init__(self, vtecs, date: datetime, to_disk: bool = False):
+    def __init__(self, vtecs, date: datetime, to_disk: bool = True, filename_suffix = None):
         """
         :param vtecs: The corrected vertical total electron content data
         :param to_disk: Save the plot to disk
@@ -32,9 +32,19 @@ class StationPlotter:
         self.vtecs = vtecs
         self.date = date
         self.to_disk = to_disk
+        if filename_suffix is None:
+            self.filename_suffix = ''
+        else:
+            self.filename_suffix = '_' + filename_suffix
 
-    def finish_plots(self, station):
-
+    def finish_plots(self, station, suffix = None):
+        if suffix is None:
+            if self.filename_suffix is not None:
+                mysuffix = self.filename_suffix
+            else:
+                mysuffix = ''
+        else:
+            mysuffix = '_' + str(suffix)
         # Let's not cause fights between Americans and other nations about ambiguous time formats :-)
         readable_date = self.date.strftime("%b %d %Y")
         numeric_date = self.date.strftime("%Y_%m_%d")
@@ -44,7 +54,7 @@ class StationPlotter:
 
         if self.to_disk:
             os.makedirs(plot_dir, exist_ok=True)
-            path = os.path.join(plot_dir, f"{numeric_date}_{station}.png")
+            path = os.path.join(plot_dir, f"{numeric_date}_{station}{mysuffix}.png")
             logger.info(f"Saving plot to {path}")
             plt.savefig(path)
 

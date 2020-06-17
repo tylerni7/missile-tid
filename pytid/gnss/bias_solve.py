@@ -41,6 +41,16 @@ class Observation:
         self.slant = slant
 
 def lsq_solve(coincidences, measurements, svs, recvs, sat_biases=None):
+    '''
+    Uses connection combinations that form a coincidence to calculate the biases for the sats and receivers.
+    (should probably put a reference in here).
+    :param coincidences:
+    :param measurements:
+    :param svs:
+    :param recvs:
+    :param sat_biases:
+    :return:
+    '''
     # total unknowns to recover
     n = len(svs) + len(recvs) + len(coincidences)
 
@@ -180,6 +190,15 @@ def round_to_res(num, res):
     return round(num/res)*res
 
 def gather_data(station_vtecs):
+    '''
+    Looks for 'coincidences'. A 'coincidence' is a set of observables for various sat/rec pairs that cross
+    into the ionosphere at approximately the same location (lat,lon).
+
+    Returns four items:
+        final_coicidences (dict) {(lat, lon, i): Observation((lat, lon, i), station, prn, vtec, s_to_v, ...}
+        measurements (list): [Observation 1, ....]
+        sats, recvrs (set): sets of satellite and receiver objects included.
+    '''
     # mapping of (lat, lon, time) to [measurement_idx]
     coincidences = defaultdict(list)
     measurements = []
@@ -218,6 +237,9 @@ def gather_data(station_vtecs):
 
     return final_coincidences, measurements, svs, recvs
 
+#
+# ***TODO: These functions are not currently used***
+#
 def remove_bad_measurements(coincidences, measurements, svs, recvs, errors, cutoff=0.8):
     error_threshold = numpy.quantile(numpy.array([abs(err) for i,err in errors.items()]), cutoff)
     bad_obs = {measurements[i] for i,err in errors.items() if abs(err) > error_threshold}
