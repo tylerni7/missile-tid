@@ -106,6 +106,6 @@ def est_tec(ionmap, startdate, tick, pos):
 
     lat, lon, _ = coordinates.ecef2geodetic(pos)
     rlat = round(lat / 2.5) * 2.5
-    rlon = round(lat / 5) * 5
+    rlon = round(lon / 5) * 5
 
     return ionmap[obs_time][rlat][rlon]

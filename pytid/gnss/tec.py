@@ -7,6 +7,7 @@ import numpy
 import math
 
 from laika import constants, helpers
+from laika.lib import coordinates
 
 K = 40.308e16
 m_to_TEC = 6.158  # meters of L1 error to TEC
@@ -71,6 +72,22 @@ def calc_vtec(dog, rec_pos, measurement, ionh=IONOSPHERE_H, el_cut=0.30, n1=0, n
 def s_to_v_factor(el, ionh=IONOSPHERE_H):
     return math.sqrt(1 - (math.cos(el) * constants.EARTH_RADIUS / ionh) ** 2)
 
+
+def ion_loc2(rec_pos, sat_pos, ionh=IONOSPHERE_H, el=None):
+    """
+    Get ionospheric pierce point for receiver - satellite connection
+    Taken from laika.iono.get_delay
+    """
+    rec = coordinates.LocalCoord.from_ecef(rec_pos)
+    alt = numpy.linalg.norm(rec_pos)
+    if el is None:
+        el, _ = helers.get_el_az(rec_pos, sat_pos)
+    alpha = numpy.pi/2 + el
+    beta = numpy.arcsin(alt * numpy.sin(alpha) / (ionh + constants.EARTH_RADIUS))
+    gamma = numpy.pi - alpha - beta
+    ipp_dist = alt * numpy.sin(gamma) / numpy.sin(beta)
+    ipp_ned = rec.ecef2ned(sat_pos) * ipp_dist / numpy.linalg.norm(sat_pos)
+    return rec.ned2ecef(ipp_ned)
 
 def ion_loc(rec_pos, sat_pos):
     """

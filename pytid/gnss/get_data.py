@@ -147,7 +147,7 @@ def get_station_clock_biases(dog, station_locs, station_data):
                 )
                 assert not math.isnan(diffs[-1])
             if diffs:
-                clock_biases[station][tick] = numpy.mean(diffs)
+                clock_biases[station][tick] = numpy.median(diffs)
     return clock_biases
 
 
