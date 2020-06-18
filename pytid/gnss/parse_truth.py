@@ -74,10 +74,13 @@ def conv_tecs(tecs, startdate):
     return convion
 
 def compare(tecs, convdmap, startdate):
+    err = 0
     for (lat, lon, tick) in tecs.keys():
         time = startdate + timedelta(seconds=tick*30)
         if time in convdmap[lat][lon]:
             print((lat, lon, tick), convdmap[lat][lon][time], tecs[(lat, lon, tick)])
+            err += (convdmap[lat][lon][time] - tecs[(lat, lon, tick)])**2
+    return err
 
 def parse_ionmap(fname):
     f = open(fname)

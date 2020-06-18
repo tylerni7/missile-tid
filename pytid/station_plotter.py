@@ -12,14 +12,14 @@ dog = AstroDog(cache_dir=conf.gnss.get("cache_dir"))
 _LOG = logging.getLogger(__name__)
 
 def collect_and_plot(start_date: datetime, duration: timedelta, logger: logging.Logger = _LOG):
-    conns, station_data, station_locs, stations = get_station_connection_data(duration, logger, start_date)
+    conns, station_data, station_locs, stations = get_station_connection_data(duration, start_date, logger)
 
     # attempt to solve integer ambiguities
     logger.info("Solving ambiguities")
-    connections.correct_conns(station_locs, station_data, conns)
+    connections.correct_conns_code(station_locs, station_data, conns)
 
     corrected_vtecs, sat_biases, rcvr_biases, tecs, cal_dat, station_vtecs, conn_map = \
-        post_ambiguity_computation(conns, logger, station_data, station_locs)
+        post_ambiguity_computation(conns, station_data, station_locs, logger=logger)
 
     plot_stations(corrected_vtecs, logger, start_date, stations)
 

@@ -31,7 +31,7 @@ def correct_tec(tec_entry, rcvr_bias=0, sat_bias=0):
     stec = vtecish / s_to_v  + 9.517753907876292 * (sat_bias - rcvr_bias)
     return location, stec * s_to_v, s_to_v
 
-def calc_vtec(dog, rec_pos, measurement, ionh=IONOSPHERE_H, el_cut=0.30, n1=0, n2=0, rcvr_bias=0, sat_bias=0):
+def calc_vtec(dog, rec_pos, measurement, ionh=IONOSPHERE_H, el_cut=0.30, n1=0, n2=0, offset=0, rcvr_bias=0, sat_bias=0):
     """
     Given a receiver position and measurement from a specific sv this calculates the vertical TEC, and the point
     at which that TEC applies (between the sat and the rec). Checks to see whether the satellite is too low in
@@ -41,6 +41,10 @@ def calc_vtec(dog, rec_pos, measurement, ionh=IONOSPHERE_H, el_cut=0.30, n1=0, n
     """
     if measurement is None:
         return None
+
+    n1 = n1 or 0
+    n2 = n2 or 0
+    offset = offset or 0
 
     # the velocity of the satellite in the direction of the receiver
     # positive is approaching, negative is receding
@@ -53,7 +57,7 @@ def calc_vtec(dog, rec_pos, measurement, ionh=IONOSPHERE_H, el_cut=0.30, n1=0, n
     # Calculate the slant TEC.
     stec = calc_tec(
         measurement,
-        n1=n1, n2=n2,
+        n1=n1, n2=n2, offset=offset,
         rcvr_bias=rcvr_bias,
         sat_bias=sat_bias,
         doppler=doppler,
@@ -120,10 +124,11 @@ def ion_loc(rec_pos, sat_pos):
     else:
         return res1
 
-def calc_carrier_delay(measurement, n1=0, n2=0, rcvr_bias=0, sat_bias=0, doppler=0):
+def calc_carrier_delay(measurement, n1=0, n2=0, offset=0, rcvr_bias=0, sat_bias=0, doppler=0):
     """
     calculates the carrier phase delay associated with a measurement
     """
+
     if measurement is None:
         return None
     observable = measurement.observables
@@ -154,10 +159,10 @@ def calc_carrier_delay(measurement, n1=0, n2=0, rcvr_bias=0, sat_bias=0, doppler
     phase_diff_meters = C * (
         (observable[band_1] - n1)/freqs[0] - (observable[band_2] - n2)/freqs[1]
     )
-    return phase_diff_meters + sat_bias - rcvr_bias, delay_factor
+    return phase_diff_meters + offset + sat_bias - rcvr_bias, delay_factor
 
 
-def calc_tec(measurement, n1=0, n2=0, rcvr_bias=0, sat_bias=0, doppler=0):
+def calc_tec(measurement, n1=0, n2=0, offset=0, rcvr_bias=0, sat_bias=0, doppler=0):
     '''
     Calculates the slant TEC for a set of observable or None if we are missing required observable. End result here
     is (Carrier Phase Difference) X (Carrier Delay Factor) / K.
@@ -174,7 +179,7 @@ def calc_tec(measurement, n1=0, n2=0, rcvr_bias=0, sat_bias=0, doppler=0):
 
     res = calc_carrier_delay(
         measurement,
-        n1=n1, n2=n2,
+        n1=n1, n2=n2, offset=offset,
         rcvr_bias=rcvr_bias,
         sat_bias=sat_bias,
         doppler=doppler,

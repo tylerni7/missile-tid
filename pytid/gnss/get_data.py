@@ -201,7 +201,7 @@ def get_vtec_data(dog, station_locs, station_data, conn_map=None, biases=None):
                 measurement = station_data[station][prn][i]
                 # if conns specified, require ambiguity data
                 if conns:
-                    if measurement and conns[i] and conns[i].n1: # and numpy.std(conns[i].n1s) < 3:
+                    if measurement and conns[i] and (conns[i].n1 or conns[i].offset): # and numpy.std(conns[i].n1s) < 3:
                         res = tec.calc_vtec(
                             dog,
                             station_locs[station],
@@ -210,6 +210,7 @@ def get_vtec_data(dog, station_locs, station_data, conn_map=None, biases=None):
                             n2=conns[i].n2,
                             rcvr_bias=station_bias,
                             sat_bias=sat_bias,
+                            offset=conns[i].offset,
                         )
                         if res is None:
                             locs.append(None)

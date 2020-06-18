@@ -41,6 +41,9 @@ class Connection:
         self.n1 = None
         self.n2 = None
 
+        # "raw" offset: the difference from the code phase tec values
+        self.offset = None
+
         # testing, place to hold n_values calculated in various ways
         self.n12_repo = {}
 
@@ -405,6 +408,36 @@ def correct_conns(station_locs, station_data, station_clock_biases, conns):
         )
         conn.n1 = n1
         conn.n2 = n2
+
+
+def correct_conns_code(station_locs, station_data, conns):
+    '''
+    Uses code phase data to guess the offset without determining n1/n2
+    :param station_locs:
+    :param station_data:
+    :param conns:
+    :return:
+    '''
+    for i, conn in enumerate(conns):
+        if i % 50 == 0:
+            print("completed %d/%d" % (i, len(conns)), end="\r")
+        # If it already has a decent n1 and n2 value, don't bother:
+        if (
+            conn.n1 is not None
+            and not math.isnan(conn.n1)
+            and conn.n2 is not None
+            and not math.isnan(conn.n2)
+            and conn.offset is not None
+        ):
+            continue
+
+        conn.offset, _ = ambiguity_correct.offset(
+            station_data,
+            conn.station,
+            conn.prn,
+            conn.ticks
+        )
+
 
 def empty_factory():
     return None

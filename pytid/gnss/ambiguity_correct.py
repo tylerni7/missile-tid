@@ -474,3 +474,34 @@ def solve_dd_ambiguity_lsq(station_locs, station_data, station_clock_biases, gro
 
     return round(a[0]), round(a[1]) # - n21
     pass
+
+
+def offset(station_data, sta, prn, ticks):
+    """
+    Sidestep ambiguity correction by just finding the difference between the
+    absolute but noisy code phase data and the smooth but offset carrier phase
+    data.
+
+    Returns the offset to be applied to the L1-L2 value and its error
+    Note: Assumes no cycle slips
+    """
+    freq_1, freq_2, _ = tec.F_lookup[prn[0]]
+
+    def obs(tick, chan):
+        res = station_data[sta][prn][tick].observables.get(chan, math.nan)
+        if math.isnan(res) and res == 'C2C':
+            res = station_data[sta][prn][tick].observables.get('C2P', math.nan)
+        return res
+
+    c2 = numpy.array([obs(i, 'C2C') for i in ticks])
+    c1 = numpy.array([obs(i, 'C1C') for i in ticks])
+    l2 = numpy.array([obs(i, 'L2C') for i in ticks])
+    l1 = numpy.array([obs(i, 'L1C') for i in ticks])
+
+    # note this is chan2 - chan1 because the ionosphere acts opposite for code phase
+    code_phase_diffs = c2 - c1
+    carrier_phase_diffs = tec.C * (l1 / freq_1 - l2 / freq_2)
+
+    avg_diff = numpy.mean(code_phase_diffs - carrier_phase_diffs)
+    err = numpy.std(code_phase_diffs - carrier_phase_diffs)
+    return avg_diff, err
