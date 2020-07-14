@@ -112,3 +112,12 @@ def est_tec(ionmap, startdate, tick, pos):
     rlon = round(lon / 5) * 5
 
     return ionmap[obs_time][rlat][rlon]
+
+def ionmap2bias(ionmap, startdate):
+    res = dict()
+    for obs_time in ionmap.keys():
+        tick = int((startdate - obs_time).seconds/30)
+        for lat in ionmap[obs_time].keys():
+            for lon in ionmap[obs_time][lat].keys():
+                res[(lat, lon, tick)] = ionmap[obs_time][lat][lon]
+    return res

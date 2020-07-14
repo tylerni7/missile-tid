@@ -417,14 +417,24 @@ def est_widelane(obs, chans, freqs, ticks):
     return round(numpy.mean(ests))
 
 
-def solve_ambiguity_lsq(station_locs, station_data, station_clock_biases, sta, prn, ticks):
-    freq_1, freq_2, freq_5 = tec.F_lookup[prn[0]]
+def solve_ambiguity_lsq(scenario, station_clock_biases, sta, prn, ticks):
+    assert prn[0] == 'G', "gps only right now"
 
-    obs = obs_factory(station_data, station_clock_biases, sta, prn)
+    scenario.dog.get_frequency()
+
+    freq_1, freq_2, freq_5 = [
+        scenario.dog.get_frequency(
+            prn,
+            scenario.station_data[sta][prn][ticks[0]].recv_time, band
+        )
+        for band in ["C1C", "C2C", "C5C"]
+    ]
+
+    obs = obs_factory(scenario.station_data, station_clock_biases, sta, prn)
 
     n21 = est_widelane(obs, (('L1C', 'L2C'), ('C1C', 'C2C')), (freq_1, freq_2), ticks)
 
-    distance_func = functools.partial(rho, station_locs, station_data, sta, prn)
+    distance_func = functools.partial(rho, scenario.station_locs, station_data, sta, prn)
 
     if not math.isnan(obs(ticks[0], 'C5C')):
         use_l5 = True
@@ -445,8 +455,15 @@ def solve_ambiguity_lsq(station_locs, station_data, station_clock_biases, sta, p
 
     return round(a[0]), round(a[0]) - n21
 
-def solve_dd_ambiguity_lsq(station_locs, station_data, station_clock_biases, group):
-    freq_1, freq_2, _ = tec.F_lookup[group.prn1[0]]
+def solve_dd_ambiguity_lsq(scenario, group):
+    assert group.prn1[0] == group.prn2[0], "must use one constellation"
+    freq_1, freq_2 = [
+        scenario.dog.get_frequency(
+            prn,
+            scenario.station_data[group.sta1[0]][group.prn1[0]][ticks[0]].recv_time, band
+        )
+        for band in ["C1C", "C2C"]
+    ]
 
     def obs(tick, chan):
         def get_meas_obs(meas):
@@ -476,7 +493,7 @@ def solve_dd_ambiguity_lsq(station_locs, station_data, station_clock_biases, gro
     pass
 
 
-def offset(station_data, sta, prn, ticks):
+def offset(scenario, sta, prn, ticks):
     """
     Sidestep ambiguity correction by just finding the difference between the
     absolute but noisy code phase data and the smooth but offset carrier phase
@@ -485,12 +502,18 @@ def offset(station_data, sta, prn, ticks):
     Returns the offset to be applied to the L1-L2 value and its error
     Note: Assumes no cycle slips
     """
-    freq_1, freq_2, _ = tec.F_lookup[prn[0]]
+    freq_1, freq_2 = [
+        scenario.dog.get_frequency(
+            prn,
+            scenario.station_data[sta][prn][ticks[0]].recv_time, band
+        )
+        for band in ["C1C", "C2C"]
+    ]
 
     def obs(tick, chan):
-        res = station_data[sta][prn][tick].observables.get(chan, math.nan)
-        if math.isnan(res) and res == 'C2C':
-            res = station_data[sta][prn][tick].observables.get('C2P', math.nan)
+        res = scenario.station_data[sta][prn][tick].observables.get(chan, math.nan)
+        if math.isnan(res) and chan == 'C2C':
+            res = scenario.station_data[sta][prn][tick].observables.get('C2P', math.nan)
         return res
 
     c2 = numpy.array([obs(i, 'C2C') for i in ticks])
@@ -502,6 +525,6 @@ def offset(station_data, sta, prn, ticks):
     code_phase_diffs = c2 - c1
     carrier_phase_diffs = tec.C * (l1 / freq_1 - l2 / freq_2)
 
-    avg_diff = numpy.mean(code_phase_diffs - carrier_phase_diffs)
+    avg_diff = numpy.median(code_phase_diffs - carrier_phase_diffs)
     err = numpy.std(code_phase_diffs - carrier_phase_diffs)
     return avg_diff, err

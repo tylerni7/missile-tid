@@ -19,8 +19,11 @@ We can use quadratic programming for this...
 """
 
 from collections import defaultdict
+from datetime import timedelta
 from laika.lib.coordinates import ecef2geodetic
+from laika.gps_time import GPSTime
 import numpy
+from operator import is_
 
 from scipy import optimize, sparse
 
@@ -33,14 +36,25 @@ time_res = 60*15   # 15 minutes
 
 
 class Observation:
-    def __init__(self, coi, station, sat, tec, slant):
+    def __init__(self, coi, station, sat, tec, slant, gpstime):
         self.coi = coi
         self.station = station
         self.sat = sat
         self.tec = tec
         self.slant = slant
+        self.gpstime = gpstime
+    
+    def __eq__(self, other):
+        return (
+            self.coi == other.coi
+            and self.station == other.station
+            and self.sat == other.sat
+            and self.tec == other.tec
+            and self.slant == other.slant
+            and self.gpstime == other.gpstime
+        )
 
-def lsq_solve(coincidences, measurements, svs, recvs, sat_biases=None):
+def lsq_solve(dog, coincidences, measurements, svs, recvs, sat_biases=None, ionmap=None):
     '''
     Uses connection combinations that form a coincidence to calculate the biases for the sats and receivers.
     (should probably put a reference in here).
@@ -51,145 +65,92 @@ def lsq_solve(coincidences, measurements, svs, recvs, sat_biases=None):
     :param sat_biases:
     :return:
     '''
-    # total unknowns to recover
-    n = len(svs) + len(recvs) + len(coincidences)
-
-    # each measurement we have
-    m = len(measurements)
-
-    A = sparse.dok_matrix((m, n))
-    b = numpy.zeros((m, ))
 
     ssvs = sorted(svs)
     def sat_bias(prn):
         i = ssvs.index(prn)
         return i
+    
+    # different satellite constellations
+    constellations = sorted({prn[0] for prn in svs})
+    constellation_params = len(constellations)
+    if 'R' in constellations:
+        # FDMA constellation isn't just a single bias: we'll model as
+        # a single bias PLUS a component linear in frequency
+        # why oh why did they use FDMA????
+        constellation_params += 1
+    
     srecvs = sorted(recvs)
-    def recv_bias(recv):
+    def recv_bias(recv, prn):
+        # each constellation can have different signal paths and therefore
+        # different instrumentation biases
         i = srecvs.index(recv)
-        return len(svs) + i
+        j = constellations.index(prn[0])
+        return len(svs) + i * constellation_params + j
     scois = sorted(coincidences.keys())
     def coincidence_idx(coi):
         i = scois.index(coi)
         # TODO how to get i?
-        return len(svs) + len(recvs) + i
+        return len(svs) + len(recvs) * len(constellations) + i
 
     print("constructing matrix")
-    # assume all measurements use same frequency
-    freqs = F_lookup[measurements[0].sat[0]]
-    delay_factor = freqs[0]**2 * freqs[1]**2/(freqs[0]**2 - freqs[1]**2)
-    for i, measurement in enumerate(measurements):
+    # total unknowns to recover
+    n = len(svs) + len(recvs) * constellation_params + len(coincidences)
+    # each measurement we have
+    m = len(measurements)
+    A = sparse.dok_matrix((m, n))
+    b = numpy.zeros((m, ))
 
+    for i, measurement in enumerate(measurements):
+        # target term: the stec (vtec/slant) value we measured
+        b[i] = measurement.tec / measurement.slant
+
+        # sat bias term
         if not sat_biases or measurement.sat not in sat_biases:
             # sat biases have opposite sign by convention...
-            A[i, sat_bias(measurement.sat)] = -delay_factor / K
-        A[i, recv_bias(measurement.station)] = delay_factor / K
-        A[i, coincidence_idx(measurement.coi)] = 1 / measurement.slant
+            A[i, sat_bias(measurement.sat)] = -1
+        else:
+            # remove known bias
+            b[i] -= -sat_biases[measurement.sat]
 
-        b[i] = measurement.tec / measurement.slant
-        if sat_biases and measurement.sat in sat_biases:
-            b[i] -= (delay_factor / K) * sat_biases[measurement.sat]
+
+        # receiver bias term
+        A[i, recv_bias(measurement.station, measurement.sat)] = 1
+
+        # linear terms for FDMA biases on GLONASS
+        if measurement.sat[0] == 'R':
+            A[i, recv_bias(measurement.station, measurement.sat) + 1] = (
+                dog.get_glonass_channel(measurement.sat, measurement.gpstime)
+            )
+
+        if not ionmap or measurement.coi not in ionmap:
+            A[i, coincidence_idx(measurement.coi)] = 1 / measurement.slant
+        else:
+            # remove known TEC
+            b[i] -= ionmap[measurement.coi] / measurement.slant
+
 
     print("solving")
     upper_bounds = numpy.ones(n) * numpy.inf
     lower_bounds = numpy.concatenate((
-        numpy.ones(len(svs) + len(recvs)) * -numpy.inf,
+        numpy.ones(len(svs) + len(recvs) * constellation_params) * -numpy.inf,
         numpy.zeros(len(coincidences))
     ))
     res = optimize.lsq_linear(A, b, bounds=(lower_bounds, upper_bounds))
     sat_biases =  {prn:res.x[sat_bias(prn)] for prn in svs}
-    recv_biases = {recv:res.x[recv_bias(recv)] for recv in recvs}
+    recv_biases = {
+        recv:res.x[
+            recv_bias(recv, 'G01') : recv_bias(recv, 'G01') + constellation_params
+        ] for recv in recvs
+    }
     tec_values =  {coi:res.x[coincidence_idx(coi)] for coi in coincidences.keys()}
     return sat_biases, recv_biases, tec_values
-
-
-def opt_solve(coincidences, measurements, svs, recvs):
-    """
-    minimize x^T * P * x + q^T * x
-    st. Ax = b
-
-    there must have been a reason I chose quadratic programming, but
-    I can't remember :P so probably the linear solver is a lot better
-    """
-    from cvxopt import matrix, solvers, spmatrix
-
-    # TODO: encode that TEC values are > 0
-    # TODO: at this point, this is basically just (weighted) least squares
-    #   maybe I should use lsq instead...
-
-    # length of x vector
-    n = len(measurements) + len(svs) + len(recvs) + len(coincidences)
-
-    # G is m x n matrix
-    m = len(measurements)
-
-    A = spmatrix([], [], [], size=(m, n))
-    b = matrix(0.0, (m, 1))
-
-    # for each measurement, we have 
-    # 1*error(i)
-    Xs = []
-    Is = []
-    Js = []
-    def error(i):
-        return i
-    
-    ssvs = sorted(svs)
-    def sat_bias(prn):
-        i = ssvs.index(prn)
-        return len(measurements) + i
-    srecvs = sorted(recvs)
-    def recv_bias(recv):
-        i = srecvs.index(recv)
-        return len(measurements) + len(svs) + i
-    scois = sorted(coincidences.keys())
-    def coincidence_idx(coi):
-        i = scois.index(coi)
-        # TODO how to get i?
-        return len(measurements) + len(svs) + len(recvs) + i
-
-    for i, measurement in enumerate(measurements):
-        freqs = F_lookup[measurement.sat[0]]
-        delay_factor = freqs[0]**2 * freqs[1]**2/(freqs[0]**2 - freqs[1]**2)
-
-        A[i, error(i)] = 1
-        # sat biases have opposite sign by convention...
-        A[i, sat_bias(measurement.sat)] = -delay_factor / K
-        A[i, recv_bias(measurement.station)] = delay_factor / K
-        A[i, coincidence_idx(measurement.coi)] = 1 / measurement.slant
-
-        b[i] = measurement.tec / measurement.slant
-
-    P = spmatrix([], [], [], size=(n, n))
-    for i, measurement in enumerate(measurements):
-        # less weight errors on measurements with high slant factors
-        P[i,i] = 10 * (measurement.slant**4)
-    for i in range(m, n):
-        if i < m + len(svs):
-            P[i,i] = 1
-        elif i < m + len(svs) + len(recvs):
-            P[i,i] = .5
-        else:
-            P[i,i] = 0
-    q = matrix(0.0, (n, 1))
-
-    G = spmatrix([], [], [], size=(m, n))
-    h = matrix(0.0, (m, 1))
-
-    sol = solvers.qp(P, q, G, h, A, b, solver='mosek')
-
-    errors = {i:sol['x'][error(i)] for i in range(len(measurements))}
-    sat_biases =  {prn:sol['x'][sat_bias(prn)] for prn in svs}
-    recv_biases = {recv:sol['x'][recv_bias(recv)] for recv in recvs}
-    tec_values =  {coi:sol['x'][coincidence_idx(coi)] for coi in coincidences.keys()}
-
-    return errors, sat_biases, recv_biases, tec_values, sol
 
 
 def round_to_res(num, res):
     return round(num/res)*res
 
-def gather_data(station_vtecs):
+def gather_data(start_time, station_vtecs):
     '''
     Looks for 'coincidences'. A 'coincidence' is a set of observables for various sat/rec pairs that cross
     into the ionosphere at approximately the same location (lat,lon).
@@ -208,27 +169,43 @@ def gather_data(station_vtecs):
     for cnt, (station, station_dat) in enumerate(station_vtecs.items()):
         print("gathering data for %3d/%d" % (cnt, len(station_vtecs)))
         for prn, (locs, dats, slants) in station_dat.items():
-            for i in range(0, len(locs), time_res//30):
-                # look through all data in this time window
-                cois = set()
-                for j in range(i, i+time_res//30):
-                    # skip if there's no data...
-                    if j >= len(locs) or locs[j] is None:
-                        continue
-                    lat, lon, _ = ecef2geodetic(locs[j])
-                    coi = (round_to_res(lat, lat_res), round_to_res(lon, lon_res), i)
-                    # only log unique COIs
-                    if coi in cois:
-                        continue
-                    cois.add(coi)
-                    obs = Observation(coi, station, prn, dats[j], slants[j])
+            if len(locs) == 0:
+                continue
+            # convert locs to lat lon in bulk for much better speed
+            # dirty hack to force numpy to treat the array as 1d
+            locs.append(None)
+            # indices with locations set
+            idxs = numpy.where(numpy.logical_not(numpy.vectorize(is_)(locs, None)))
+            locs.pop(-1)
+            if len(idxs[0]) == 0:
+                continue
+            locs_lla = ecef2geodetic(numpy.stack(numpy.array(locs)[idxs]))
 
-                    coincidences[coi].append(obs)
+            prev_coi = None
+            for i, idx in enumerate(idxs[0]):
+                cois = set()
+                lat, lon, _ = locs_lla[i]
+                coi = (
+                    round_to_res(lat, lat_res),
+                    round_to_res(lon, lon_res),
+                    (idx // (time_res / 30)) * 30
+                )
+                if coi == prev_coi:
+                    continue
+                prev_coi = coi
+
+                gpstime = start_time + timedelta(seconds=30 * int(idx))
+                gpstime = GPSTime.from_datetime(gpstime)
+                obs = Observation(coi, station, prn, dats[idx], slants[idx], gpstime)
+                coincidences[coi].append(obs)
     
     final_coincidences = dict()
     # only include coincidences with >= 2 measurements
     for coi, obss in coincidences.items():
-        if len({obs.station for obs in obss}) > 1:
+        if (
+            len({obs.station for obs in obss}) > 1
+            or len({obs.sat for obs in obss}) > 1
+        ):
             final_coincidences[coi] = obss
             for obs in obss:
                 svs.add(obs.sat)
@@ -236,6 +213,7 @@ def gather_data(station_vtecs):
                 measurements.append(obs)
 
     return final_coincidences, measurements, svs, recvs
+
 
 #
 # ***TODO: These functions are not currently used***

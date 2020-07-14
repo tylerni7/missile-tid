@@ -27,11 +27,12 @@ F_lookup = {
 }
 
 def correct_tec(tec_entry, rcvr_bias=0, sat_bias=0):
+    # NOTE: the biases now have units of TECu, not meters !
     location, vtecish, s_to_v = tec_entry
-    stec = vtecish / s_to_v  + 9.517753907876292 * (sat_bias - rcvr_bias)
+    stec = vtecish / s_to_v  + (sat_bias - rcvr_bias)
     return location, stec * s_to_v, s_to_v
 
-def calc_vtec(dog, rec_pos, measurement, ionh=IONOSPHERE_H, el_cut=0.30, n1=0, n2=0, offset=0, rcvr_bias=0, sat_bias=0):
+def calc_vtec(scenario, station, prn, tick, ionh=IONOSPHERE_H, el_cut=0.3, n1=0, n2=0, offset=0, rcvr_bias=0, sat_bias=0):
     """
     Given a receiver position and measurement from a specific sv this calculates the vertical TEC, and the point
     at which that TEC applies (between the sat and the rec). Checks to see whether the satellite is too low in
@@ -39,37 +40,36 @@ def calc_vtec(dog, rec_pos, measurement, ionh=IONOSPHERE_H, el_cut=0.30, n1=0, n
 
     Returns: ( ... , ... , ... )
     """
+    measurement = scenario.station_data[station][prn][tick]
     if measurement is None:
         return None
+
+    rec_pos = scenario.station_locs[station]
 
     n1 = n1 or 0
     n2 = n2 or 0
     offset = offset or 0
 
-    # the velocity of the satellite in the direction of the receiver
-    # positive is approaching, negative is receding
-    # this can probably safely be ignored for just about everything...
-    doppler = (
-        numpy.linalg.norm(rec_pos - measurement.sat_pos_final + measurement.sat_vel)
-        - numpy.linalg.norm(rec_pos - measurement.sat_pos_final)
-    )
-
     # Calculate the slant TEC.
-    stec = calc_tec(
+    res = calc_carrier_delay(
+        scenario.dog,
         measurement,
         n1=n1, n2=n2, offset=offset,
         rcvr_bias=rcvr_bias,
         sat_bias=sat_bias,
-        doppler=doppler,
     )
-    if stec is None:
+    if res is None:
         return None
+    
+    phase_diff, delay_factor = res
+    stec = phase_diff * delay_factor / K
+
     if math.isnan(stec):
         return None
 
     if not measurement.processed:
-        measurement.process(dog)
-    el, az = helpers.get_el_az(rec_pos, measurement.sat_pos)
+        measurement.process(scenario.dog)
+    el = scenario.station_el(station, measurement.sat_pos)
     # ignore things too low in the sky
     if el < el_cut or math.isnan(el):
         return None
@@ -84,23 +84,6 @@ def s_to_v_factor(el, ionh=IONOSPHERE_H):
     :return:
     '''
     return math.sqrt(1 - (math.cos(el) * constants.EARTH_RADIUS / ionh) ** 2)
-
-
-def ion_loc2(rec_pos, sat_pos, ionh=IONOSPHERE_H, el=None):
-    """
-    Get ionospheric pierce point for receiver - satellite connection
-    Taken from laika.iono.get_delay
-    """
-    rec = coordinates.LocalCoord.from_ecef(rec_pos)
-    alt = numpy.linalg.norm(rec_pos)
-    if el is None:
-        el, _ = helers.get_el_az(rec_pos, sat_pos)
-    alpha = numpy.pi/2 + el
-    beta = numpy.arcsin(alt * numpy.sin(alpha) / (ionh + constants.EARTH_RADIUS))
-    gamma = numpy.pi - alpha - beta
-    ipp_dist = alt * numpy.sin(gamma) / numpy.sin(beta)
-    ipp_ned = rec.ecef2ned(sat_pos) * ipp_dist / numpy.linalg.norm(sat_pos)
-    return rec.ned2ecef(ipp_ned)
 
 def ion_loc(rec_pos, sat_pos):
     """
@@ -124,21 +107,13 @@ def ion_loc(rec_pos, sat_pos):
     else:
         return res1
 
-def calc_carrier_delay(measurement, n1=0, n2=0, offset=0, rcvr_bias=0, sat_bias=0, doppler=0):
+def calc_carrier_delay(dog, measurement, n1=0, n2=0, offset=0, rcvr_bias=0, sat_bias=0):
     """
     calculates the carrier phase delay associated with a measurement
     """
-
     if measurement is None:
         return None
     observable = measurement.observables
-    band = measurement.prn[0]  # GPS/GLONASS/GALILEO
-    freqs = F_lookup[measurement.prn[0]]
-
-    if doppler:
-        # doppler adjust the frequencies
-        gamma = math.sqrt((C - doppler)/(C + doppler))
-        freqs = [f * gamma for f in freqs]
 
     band_1 = 'L1C'
     if measurement.prn[0] == 'E':
@@ -146,6 +121,7 @@ def calc_carrier_delay(measurement, n1=0, n2=0, offset=0, rcvr_bias=0, sat_bias=
     else:
         band_2 = 'L2C'
 
+    freqs = [dog.get_frequency(measurement.prn, measurement.recv_time, band) for band in [band_1, band_2]]
 
     if (
         math.isnan(observable.get(band_1, math.nan))
@@ -162,35 +138,7 @@ def calc_carrier_delay(measurement, n1=0, n2=0, offset=0, rcvr_bias=0, sat_bias=
     return phase_diff_meters + offset + sat_bias - rcvr_bias, delay_factor
 
 
-def calc_tec(measurement, n1=0, n2=0, offset=0, rcvr_bias=0, sat_bias=0, doppler=0):
-    '''
-    Calculates the slant TEC for a set of observable or None if we are missing required observable. End result here
-    is (Carrier Phase Difference) X (Carrier Delay Factor) / K.
-    :param measurement:
-    :param n1:
-    :param n2:
-    :param rcvr_bias:
-    :param sat_bias:
-    :param doppler:
-    :return:
-    '''
-    if measurement is None:
-        return None
-
-    res = calc_carrier_delay(
-        measurement,
-        n1=n1, n2=n2, offset=offset,
-        rcvr_bias=rcvr_bias,
-        sat_bias=sat_bias,
-        doppler=doppler,
-    )
-    if res is None:
-        return None
-
-    phase_diff, delay_factor = res
-    return phase_diff * delay_factor / K
-
-def melbourne_wubbena(measurement):
+def melbourne_wubbena(dog, measurement):
     """
     Melbourne-Wubbena Combination:  (Carrier-Phase Widelane - Code-Phase Narrowlane)
                                     (\phi_WL - R_NL)
@@ -202,7 +150,8 @@ def melbourne_wubbena(measurement):
         return None
     observable = measurement.observables
     chan2 = 'C2C' if not math.isnan(observable.get('C2C', math.nan)) else 'C2P'
-    freqs = F_lookup[measurement.prn[0]]
+
+    freqs = [dog.get_frequency(measurement.prn, measurement.recv_time, band) for band in ['C1C', 'C2C']]
     phase = C/(freqs[0] - freqs[1])*(observable['L1C'] - observable['L2C'])
     pseudorange = 1/(freqs[0] + freqs[1])*(freqs[0]*observable['C1C'] + freqs[1]*observable[chan2])
     wavelength = C/(freqs[0] - freqs[1])

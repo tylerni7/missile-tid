@@ -4,16 +4,19 @@ integer ambiguities. Break this out into an easy-to-use class
 """
 from collections import defaultdict
 from laika import helpers
+from laika.lib import coordinates
 import math
 import numpy
 
 from pytid.gnss import ambiguity_correct
+from pytid.gnss import get_data
 from pytid.gnss import tec
 
-CYCLE_SLIP_CUTOFF = 6
+CYCLE_SLIP_CUTOFF_MW = 10
+CYCLE_SLIP_CUTOFF_DELAY = 0.3
 MIN_CON_LENGTH = 20  # 10 minutes worth of connection
 DISCON_TIME = 5      # cycle slip for >= 5 samples of no info
-
+FULL_CORRECTION = False  # whether to do the full laika "correct" method, largely unnecessary
 EL_CUTOFF = 0.30
 
 
@@ -28,9 +31,9 @@ def contains_needed_info(measurement):
 
 
 class Connection:
-    def __init__(self, dog, station_locs, station_data, station, prn, tick0, tickn, filter_ticks=True):
-        self.dog = dog
-        self.loc = station_locs[station]
+    def __init__(self, scenario, station, prn, tick0, tickn, filter_ticks=True):
+        self.scenario = scenario
+        self.loc = scenario.station_locs[station]
         self.station = station
         self.prn = prn
         self.tick0 = tick0
@@ -53,7 +56,7 @@ class Connection:
 
         # TODO: this could incorporate phase windup as well?
         if filter_ticks:
-            self.filter_ticks(station_data[station][prn])
+            self.filter_ticks(scenario.station_data[station][prn])
 
     def filter_ticks(self, this_data):
         '''
@@ -70,6 +73,7 @@ class Connection:
         self.ticks = []
         last_seen = self.tick0
         last_mw = None
+        last_tec = None
         for tick in range(self.tick0, self.tickn):
             if not this_data[tick]:
                 continue
@@ -79,11 +83,13 @@ class Connection:
 
             # ignore "bad connections" (low elevation)
             if not this_data[tick].processed:
-                if not this_data[tick].process(self.dog):
+                if not this_data[tick].process(self.scenario.dog):
                     continue
-            if not this_data[tick].corrected:
-                this_data[tick].correct(self.loc, self.dog)
-            el, _ = helpers.get_el_az(self.loc, this_data[tick].sat_pos)
+            
+            if FULL_CORRECTION and not this_data[tick].corrected:
+                this_data[tick].correct(self.loc, self.scenario.dog)
+
+            el = self.scenario.station_el(self.station, this_data[tick].sat_pos)
             if el < EL_CUTOFF:
                 continue
 
@@ -96,13 +102,22 @@ class Connection:
             last_seen = tick
 
             # detect cycle slips due to changing N_w
-            mw, _ = tec.melbourne_wubbena(this_data[tick])
-            if last_mw is not None and abs(last_mw - mw) > CYCLE_SLIP_CUTOFF:
-                print("cycle slip: {0}-{1}@{2} jump of {3:0.2f}".format(
+            mw, _ = tec.melbourne_wubbena(self.scenario.dog, this_data[tick])
+            if last_mw is not None and abs(last_mw - mw) > CYCLE_SLIP_CUTOFF_MW:
+                print("cycle slip: {0}-{1}@{2} mw jump of {3:0.2f}".format(
                     self.station, self.prn, tick, last_mw - mw
                 ))
                 break
             last_mw = mw
+            # OR cycle slips from big changes in TEC
+            delay, _ = tec.calc_carrier_delay(self.scenario.dog, this_data[tick])
+            if last_tec is not None and abs(last_tec - delay) > CYCLE_SLIP_CUTOFF_DELAY:
+                print("cycle slip: {0}-{1}@{2} delay jump of {3:0.2f}".format(
+                    self.station, self.prn, tick, last_tec - delay
+                ))
+                break
+            last_tec = delay
+
 
             # all good
             self.ticks.append(tick)
@@ -202,14 +217,14 @@ class Group:
         )
 
 
-def make_connections(dog, station_locs, station_data, station, prn, tick0, tickn):
+def make_connections(scenario, station, prn, tick0, tickn):
     """
     given data and a bunch of ticks, split it up into connections
     """
     def next_valid_tick(tick):
         '''Gets the next integer above `tick` in the dict station_data[station][prn]'''
         for i in range(tick + 1, tickn):
-            if station_data[station][prn][i]:
+            if scenario.station_data[station][prn][i]:
                 return i
         return tickn
 
@@ -218,7 +233,7 @@ def make_connections(dog, station_locs, station_data, station, prn, tick0, tickn
     # 1) make a connection from the ticks. If long enough, add to inventory. 2) chop off the ticks consumed. 3) If any
     #   ticks are left, goto (1).
     while ticki < tickn:
-        con = Connection(dog, station_locs, station_data, station, prn, ticki, tickn)
+        con = Connection(scenario, station, prn, ticki, tickn)
         if not con.ticks:
             ticki = next_valid_tick(ticki)
             continue
@@ -227,28 +242,24 @@ def make_connections(dog, station_locs, station_data, station, prn, tick0, tickn
         ticki = next_valid_tick(con.tickn)
     return connections
 
-def get_connections(dog, station_locs, station_data, skip=None):
+def get_connections(scenario, skip=None):
     '''
     For each (station,satelite), grabs the ticks and GNSS measurements (the innermost dict of station_data) and
     runs it through "make_connections()" to get a list of Connection objects.
-    :param dog: Astrodog object
-    :param station_locs: dict object keyed by station with gps coords
-    :param station_data: dict of the form : {<station>: { <satelite>: { <tick>: <laika.raw_gnss.GNSSMeasurement>,...}, ...}, ...}
+    :param scenario: ScenarioInfo object
     :param skip: a list of stations that should be skipped.
     :return:
     '''
     connections = []
-    for station in station_data.keys():
+    for station in scenario.stations:
         if skip and station in skip:
             continue
-        for prn in station_data[station].keys():
-            ticks = station_data[station][prn].keys()
+        for prn in scenario.station_data[station].keys():
+            ticks = scenario.station_data[station][prn].keys()
             if not ticks:
                 continue
             connections += make_connections(
-                dog,
-                station_locs,
-                station_data,
+                scenario,
                 station,
                 prn,
                 min(ticks),
@@ -329,11 +340,10 @@ def get_groups(station_data, connections):
 
 diffs = []
 
-def correct_group(station_locs, station_data, group):
+def correct_group(scenario, group):
     '''
     Applies the ambiguity correction calculated from a 'group' of station/prns.
-    :param station_locs:
-    :param station_data:
+    :param scenario:
     :param group:
     :return:
     '''
@@ -344,7 +354,7 @@ def correct_group(station_locs, station_data, group):
     prn2 = members[1].prn
 
     ticks = [members[i].ticks for i in range(4)]    # list of lists
-    res = ambiguity_correct.solve_ambiguities(station_locs, station_data, sta1, sta2, prn1, prn2, ticks)
+    res = ambiguity_correct.solve_ambiguities(scenario.station_locs, scenario.station_data, sta1, sta2, prn1, prn2, ticks)
     if res is None:
         return True
 
@@ -360,12 +370,11 @@ def correct_group(station_locs, station_data, group):
         members[i].werrs.append( (res[1][i], res[2], res[3]) )
     return bad
 
-def correct_groups(station_locs, station_data, groups):
+def correct_groups(scenario, groups):
     '''
     Runs every group in 'groups' through the ambiguity correction. This appears to take a long time
     based on the print statements.
-    :param station_locs:
-    :param station_data:
+    :param scenario:
     :param groups:
     :return:
     '''
@@ -373,16 +382,14 @@ def correct_groups(station_locs, station_data, groups):
     for i, group in enumerate(groups):
         if i % 50 == 0:
             print(i, len(groups), bads)
-        bads += correct_group(station_locs, station_data, group)
+        bads += correct_group(scenario.station_locs, scenario.station_data, group)
     print( numpy.mean(diffs), bads )
 
-def correct_conns(station_locs, station_data, station_clock_biases, conns):
+def correct_conns(scenario, conns):
     '''
     Runs the initial least-squares ambiguity correction and gets an initial
     estimate of n1, n2 (adds it to the connection object).
-    :param station_locs:
-    :param station_data:
-    :param station_clock_biases:
+    :param scenario:
     :param conns:
     :return:
     '''
@@ -399,9 +406,7 @@ def correct_conns(station_locs, station_data, station_clock_biases, conns):
         ):
             continue
         n1, n2 = ambiguity_correct.solve_ambiguity_lsq(
-            station_locs,
-            station_data,
-            station_clock_biases,
+            scenario,
             conn.station,
             conn.prn,
             conn.ticks
@@ -410,11 +415,10 @@ def correct_conns(station_locs, station_data, station_clock_biases, conns):
         conn.n2 = n2
 
 
-def correct_conns_code(station_locs, station_data, conns):
+def correct_conns_code(scenario, conns):
     '''
     Uses code phase data to guess the offset without determining n1/n2
-    :param station_locs:
-    :param station_data:
+    :param scenario:
     :param conns:
     :return:
     '''
@@ -432,7 +436,7 @@ def correct_conns_code(station_locs, station_data, conns):
             continue
 
         conn.offset, _ = ambiguity_correct.offset(
-            station_data,
+            scenario,
             conn.station,
             conn.prn,
             conn.ticks
@@ -455,7 +459,7 @@ def make_conn_map(connections):
     # so do this slightly uglier version
     for station in {conn.station for conn in connections}:
         conn_map[station] = {
-            'G%02d' % i: defaultdict(empty_factory) for i in range(1, 33)
+            prn: defaultdict(empty_factory) for prn in get_data.satellites
         }
 
     for conn in connections:

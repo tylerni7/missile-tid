@@ -13,8 +13,9 @@ import os
 import pickle
 
 from laika import constants
+from laika.downloader import download_cors_station, download_file
 from laika.gps_time import GPSTime
-from laika.downloader import download_cors_station
+from laika.lib import coordinates
 from laika.rinex_file import RINEXFile, DownloadError
 from laika.dgps import get_station_position
 import laika.raw_gnss as raw
@@ -24,6 +25,21 @@ from pytid.gnss import tec
 # one day worth of samples every 30 seconds
 default_len = int(24*60/0.5)
 
+# GPS has PRN 1-32; GLONASS has 1-23 but could use more?
+satellites = ['G%02d' % i for i in range(1,33)] + ['R%02d' % i for i in range(1,25)]
+
+
+"""
+Couldn't find good data source so used
+http://geodesy.unr.edu/ who has data
+citation:
+Blewitt, G., W. C. Hammond, and C. Kreemer (2018),
+Harnessing the GPS data explosion for interdisciplinary science, Eos, 99,
+https://doi.org/10.1029/2018EO104623
+"""
+extra_station_info_path = os.path.dirname(__file__) + "/stations.pickle"
+extra_station_info = pickle.load(open(extra_station_info_path, "rb"))
+
 def get_satellite_delays(dog, date):
     dog.get_dcb_data(GPSTime.from_datetime(date))
     res = {}
@@ -31,28 +47,89 @@ def get_satellite_delays(dog, date):
     # ours is in pseudorange (meters)
     factor = constants.SPEED_OF_LIGHT/1e9
     factor = 0.365
-    for prn in ['G%02d' % i for i in range(1, 33)]:
+    for prn in satellites:
         if hasattr(dog.dcbs[prn][0], 'C1W_C2W'):
             res[prn] = dog.dcbs[prn][0].C1W_C2W * factor
         elif hasattr(dog.dcbs[prn][0], 'C1P_C2P'):
             res[prn] = dog.dcbs[prn][0].C1P_C2P * factor
     return res
 
-def data_for_station(dog, station_name, date=None):
+def get_nearby_stations(dog, point, dist=400000):
+    cache_dir = dog.cache_dir
+    cors_pos_path = cache_dir + 'cors_coord/cors_station_positions'
+    cors_pos_dict = numpy.load(open(cors_pos_path, "rb"), allow_pickle=True).item()
+    station_names = list()
+    station_pos = list()
+
+    for name, (_, pos, _) in cors_pos_dict.items():
+        station_names.append(name)
+        station_pos.append(pos)
+    for name, pos in extra_station_info.items():
+        station_names.append(name)
+        station_pos.append(pos)
+
+    station_names = numpy.array(station_names)
+    station_pos = numpy.array(station_pos)
+    point = numpy.array(point)
+
+    dists = numpy.sqrt( ((station_pos - numpy.array(point))**2).sum(1) )
+
+    return list(station_names[numpy.where(dists < dist)[0]])
+
+def download_misc_igs_station(time, station_name, cache_dir):
+    """
+    Downloader for non-CORS stations
+    """
+    cache_subdir = cache_dir + 'misc_igs_obs/'
+    t = time.as_datetime()
+    # different path formats...
+
+    folder_path = t.strftime('%Y/%j/')
+    filename = station_name + t.strftime("%j0.%yo")
+    url_bases = (
+        'ftp://garner.ucsd.edu/archive/garner/rinex/',
+        'ftp://data-out.unavco.org/pub/rinex/obs/',
+    )
+    try:
+        filepath = download_file(url_bases, folder_path, cache_subdir, filename, compression='.Z')
+        return filepath
+    except IOError:
+        url_bases = (
+        'ftp://igs.gnsswhu.cn/pub/gps/data/daily/',
+        'ftp://cddis.nasa.gov/gnss/data/daily/',
+        )
+        folder_path += "20o/"
+        try:
+            filepath = download_file(url_bases, folder_path, cache_subdir, filename, compression='.Z')
+            return filepath
+        except IOError:
+            return None
+
+def data_for_station(dog, station_name, date):
     """
     Get data from a particular station and time. Wraps a number of laika function calls.
     Station names are CORS names (eg: 'slac')
     Dates are datetimes (eg: datetime(2020,1,7))
     """
-
-    if date is None:
-        date = datetime(2020,1,7)
     time = GPSTime.from_datetime(date)
-    rinex_obs_file = download_cors_station(time, station_name, cache_dir=dog.cache_dir)
+    rinex_obs_file = None
+    try:
+        station_pos = get_station_position(station_name, cache_dir=dog.cache_dir)
+        rinex_obs_file = download_cors_station(time, station_name, cache_dir=dog.cache_dir)
+    except (KeyError, DownloadError):
+        pass
+
+    if not rinex_obs_file:
+        # station position not in CORS map, try another thing
+        if station_name in extra_station_info:
+            station_pos = numpy.array(extra_station_info[station_name])
+            rinex_obs_file = download_misc_igs_station(time, station_name, cache_dir=dog.cache_dir)
+        else:
+            raise DownloadError
 
     obs_data = RINEXFile(rinex_obs_file)
-    station_pos = get_station_position(station_name, cache_dir=dog.cache_dir)
-    return station_pos, raw.read_rinex_obs(obs_data)
+    return station_pos, raw.read_rinex_obs(obs_data, rate=30)
+
 
 # want to create:
 # receiver -> satellite -> tick -> measurement
@@ -69,104 +146,145 @@ def station_transform(station_data, start_dict=None, offset=0):
     '''
     # TODO GPS only
     if start_dict is None:
-        ret = {'G%02d' % i: defaultdict() for i in range(1, 33)}
+        ret = {prn: defaultdict() for prn in satellites}
     else:
         ret = start_dict
 
     for i, dat in enumerate(station_data):
         for sample in dat:
-            # ignore non-GPS data for now
-            if sample.prn.startswith("G"):
+            # ignore non-GPS/GLONASS data for now
+            if sample.prn[0] in {"G", "R"}:
                 ret[sample.prn][i + offset] = sample
-    
+
     return ret
 
 def empty_factory():
     return None
 
-def populate_data(dog, start_date, duration, stations):
-    '''
-    Uses laika to retrieve station data for a particular time interval and set of stations.
-    :param dog: laika AstroDog object
-    :param start_date: python datetime object
-    :param duration: python timedelta object
-    :param stations: python list of strings representing individual stations.
-    :return:
-    '''
-    station_locs = {}
-    station_data = {}
-    for station in stations:
-        print(station)
-        cache_name = "cached/stationdat_%s_%s_to_%s" % (
-            station,
-            start_date.strftime("%Y-%m-%d"),
-            (start_date + duration).strftime("%Y-%m-%d")
-        )
-        if os.path.exists(cache_name):
-            station_data[station] = pickle.load(open(cache_name, "rb"))
-            station_locs[station] = get_station_position(station, cache_dir=dog.cache_dir)
-            continue
+class ScenarioInfo:
+    def __init__(self, dog, start_date, duration, stations):
+        self.dog = dog
+        self.start_date = start_date
+        self.duration = duration
+        self.stations = stations
+        self._station_locs = None
+        self._station_data = None
+        self._clock_biases = None
 
-        station_data[station] = {'G%02d' % i: defaultdict(empty_factory) for i in range(1, 33)}
-        date = start_date
-        while date < start_date + duration:
-            try:
-                loc, data = data_for_station(dog, station, date)
-                station_data[station] = station_transform(
-                                            data,
-                                            start_dict=station_data[station],
-                                            offset=int((date - start_date).total_seconds()/30)
-                                        )
-                station_locs[station] = loc
-            except (ValueError, DownloadError):
-                print("*** error with station " + station)
-            date += timedelta(days=1)
-        os.makedirs("cached", exist_ok=True)
-        pickle.dump(station_data[station], open(cache_name, "wb"))
-    return station_locs, station_data
+        # Local coordinates for the stations we're using
+        # this enables faster elevation lookups
+        self.station_converters = dict()
 
+    @property
+    def station_locs(self):
+        if self._station_locs is None:
+            self.populate_data()
+        return self._station_locs
 
-def get_station_clock_biases(dog, station_locs, station_data):
-    """
-    Figure out the clock bias for the station at each tick.
-    For each tick, take the satellite position - station position, and after
-    correcting for the satellite bias, assume the remainder is receiver bias.
-    Average it out a bit
-    """
-    clock_biases = dict()
-    for station in station_data:
-        clock_biases[station] = dict()
-        sats = ['G%02d'%i for i in range(1, 33)]
-        max_tick = max(max(station_data[station][prn].keys(), default=0) for prn in sats)
-        for tick in range(max_tick):
-            diffs = []
-            for prn in sats:
-                if station_data[station][prn][tick] is None:
-                    continue
-                if math.isnan(station_data[station][prn][tick].observables['C1C']):
-                    continue
-                if not station_data[station][prn][tick].corrected:
-                    station_data[station][prn][tick].correct(
-                        station_locs[station],
-                        dog
+    @property
+    def station_data(self):
+        if self._station_data is None:
+            self.populate_data()
+        return self._station_data
+
+    def station_el(self, station, sat_pos):
+        '''
+        Re-use station converters for faster elevation lookups:
+        we do this operation a lot, and Laika creates objects each time
+        which is quite expensive
+        '''
+        if station not in self.station_converters:
+            self.station_converters[station] = (
+                coordinates.LocalCoord.from_ecef(self.station_locs[station])
+            )
+        sat_ned = self.station_converters[station].ecef2ned(sat_pos)
+        sat_range = numpy.linalg.norm(sat_ned)
+        return numpy.arcsin(-sat_ned[2]/sat_range)
+
+    def populate_data(self):
+        self._station_locs = {}
+        self._station_data = {}
+        bad_stations = []
+        for station in self.stations:
+            print(station)
+            cache_name = "cached/stationdat_%s_%s_to_%s" % (
+                station,
+                self.start_date.strftime("%Y-%m-%d"),
+                (self.start_date + self.duration).strftime("%Y-%m-%d")
+            )
+            if os.path.exists(cache_name):
+                self.station_data[station] = pickle.load(open(cache_name, "rb"))
+                try:
+                    self.station_locs[station] = get_station_position(station, cache_dir=self.dog.cache_dir)
+                except KeyError:
+                    self.station_locs[station] = numpy.array(extra_station_info[station])
+                continue
+
+            self.station_data[station] = {prn: defaultdict(empty_factory) for prn in satellites}
+            date = self.start_date
+            while date < self.start_date + self.duration:
+                try:
+                    loc, data = data_for_station(self.dog, station, date)
+                    self.station_data[station] = station_transform(
+                                                data,
+                                                start_dict=self.station_data[station],
+                                                offset=int((date - self.start_date).total_seconds()/30)
+                                            )
+                    self.station_locs[station] = loc
+                except (ValueError, DownloadError):
+                    print("*** error with station " + station)
+                    bad_stations.append(station)
+                date += timedelta(days=1)
+            os.makedirs("cached", exist_ok=True)
+            pickle.dump(self.station_data[station], open(cache_name, "wb"))
+        for bad_station in bad_stations:
+            self.stations.remove(bad_station)
+
+    @property
+    def clock_biases(self):
+        if self._clock_biases is None:
+            self.populate_station_clock_biases()
+        return self._clock_biases
+
+    def populate_station_clock_biases(self):
+        """
+        Figure out the clock bias for the station at each tick.
+        For each tick, take the satellite position - station position, and after
+        correcting for the satellite bias, assume the remainder is receiver bias.
+        Average it out a bit
+        """
+        self._clock_biases = dict()
+        for station in self.station_data:
+            self._clock_biases[station] = dict()
+            max_tick = max(max(self.station_data[station][prn].keys(), default=0) for prn in satellites)
+            for tick in range(max_tick):
+                diffs = []
+                for prn in satellites:
+                    if self.station_data[station][prn][tick] is None:
+                        continue
+                    if math.isnan(self.station_data[station][prn][tick].observables['C1C']):
+                        continue
+                    if not self.station_data[station][prn][tick].corrected:
+                        self.station_data[station][prn][tick].correct(
+                            self.station_locs[station],
+                            self.dog
+                        )
+                    if math.isnan(self.station_data[station][prn][tick].sat_pos_final[0]):
+                        continue
+                    diffs.append(
+                        (
+                            numpy.linalg.norm(
+                                self.station_data[station][prn][tick].sat_pos_final
+                                - self.station_locs[station]
+                            ) - self.station_data[station][prn][tick].observables['C1C']
+                        ) / tec.C - self.station_data[station][prn][tick].sat_clock_err
                     )
-                if math.isnan(station_data[station][prn][tick].sat_pos_final[0]):
-                    continue
-                diffs.append(
-                    (
-                        numpy.linalg.norm(
-                            station_data[station][prn][tick].sat_pos_final
-                            - station_locs[station]
-                        ) - station_data[station][prn][tick].observables['C1C']
-                    ) / tec.C - station_data[station][prn][tick].sat_clock_err
-                )
-                assert not math.isnan(diffs[-1])
-            if diffs:
-                clock_biases[station][tick] = numpy.median(diffs)
-    return clock_biases
+                    assert not math.isnan(diffs[-1])
+                if diffs:
+                    self._clock_biases[station][tick] = numpy.median(diffs)
 
 
-def get_vtec_data(dog, station_locs, station_data, conn_map=None, biases=None):
+def get_vtec_data(scenario, conn_map=None, biases=None):
     '''
     Iterates over (station, PRN) pairs and computes the VTEC for each one. VTEC here takes the form of a tuple of
     lists in the form: (locs, dats, slants) where each one is a list of values of length max-tick-for-station-prn.
@@ -174,9 +292,7 @@ def get_vtec_data(dog, station_locs, station_data, conn_map=None, biases=None):
     triple, although they are each in their own vector.
     Here 'loc' is the location of the ionosphere starting point. 'data' is the vtec calculation, and 'slatn' is the
     slant_to_vertical conversion factor.
-    :param dog:
-    :param station_locs:
-    :param station_data:
+    :param scenario:
     :param conn_map:
     :param biases:
     :return:
@@ -193,19 +309,18 @@ def get_vtec_data(dog, station_locs, station_data, conn_map=None, biases=None):
             dats = []
             locs = []
             slants = []
-            if station_data[station][prn]:
-                end = max(station_data[station][prn].keys())
+            if scenario.station_data[station].get(prn):
+                end = max(scenario.station_data[station][prn].keys())
             else:
                 end = 0
             for i in range(end):    # iterate over integers in the range of ticks
-                measurement = station_data[station][prn][i]
+                measurement = scenario.station_data[station][prn][i]
                 # if conns specified, require ambiguity data
                 if conns:
                     if measurement and conns[i] and (conns[i].n1 or conns[i].offset): # and numpy.std(conns[i].n1s) < 3:
                         res = tec.calc_vtec(
-                            dog,
-                            station_locs[station],
-                            station_data[station][prn][i],
+                            scenario,
+                            station, prn, i,
                             n1=conns[i].n1,
                             n2=conns[i].n2,
                             rcvr_bias=station_bias,
@@ -226,7 +341,7 @@ def get_vtec_data(dog, station_locs, station_data, conn_map=None, biases=None):
                         slants.append(math.nan)
 
                 elif measurement:
-                    res = tec.calc_vtec(dog, station_locs[station], station_data[station][prn][i])
+                    res = tec.calc_vtec(scenario, station, prn, i)
                     if res is None:
                         locs.append(None)
                         dats.append(math.nan)
@@ -239,28 +354,30 @@ def get_vtec_data(dog, station_locs, station_data, conn_map=None, biases=None):
                     locs.append(None)
                     dats.append(math.nan)
                     slants.append(math.nan)
-            
+
             station_vtecs[station][prn] = (locs, dats, slants)
         return station_vtecs[station][prn]
 
-    for station in station_data.keys():
+    for station in scenario.stations:
         print(station)
-        for recv in ['G%02d' % i for i in range(1, 33)]:
+        for prn in satellites:
             # Use the connection map if we have it, otherwise don't.
             if conn_map:
-                vtec_for(station, recv, conns=conn_map[station][recv], biases=biases)
+                if station not in conn_map:
+                    break  # no connections... ignore this
+                vtec_for(station, prn, conns=conn_map[station][prn], biases=biases)
             else:
-                vtec_for(station, recv, biases=biases)
+                vtec_for(station, prn, biases=biases)
     return station_vtecs
 
-def correct_vtec_data(vtecs, sat_biases, station_biases):
+def correct_vtec_data(scenario, vtecs, sat_biases, station_biases):
     corrected = copy.deepcopy(vtecs)
     bad_stations = []
     for station in corrected:
         if station not in station_biases:
             bad_stations.append(station)
             continue
-        for prn in ['G%02d' % i for i in range(1, 33)]:
+        for prn in satellites:
             if prn not in corrected[station]:
                 print("no sat info for %s for %s" % (station, prn))
                 continue
@@ -268,7 +385,12 @@ def correct_vtec_data(vtecs, sat_biases, station_biases):
                 dat = corrected[station][prn][0][i], corrected[station][prn][1][i], corrected[station][prn][2][i]
                 if dat[0] is None:
                     continue
-                dat = tec.correct_tec(dat, rcvr_bias=station_biases[station], sat_bias=sat_biases[prn])
+                if prn[0] == 'G':
+                    rcvr_bias = station_biases[station][0]
+                elif prn[0] == 'R':
+                    chan = scenario.dog.get_glonass_channel(prn, scenario.station_data[station][prn][i].recv_time)
+                    rcvr_bias = station_biases[station][1] + station_biases[station][2] * chan
+                dat = tec.correct_tec(dat, rcvr_bias=rcvr_bias, sat_bias=sat_biases[prn])
                 corrected[station][prn][0][i], corrected[station][prn][1][i], corrected[station][prn][2][i] = dat
     for station in bad_stations:
         print("missing bias data for %s: deleting vtecs" % station)
@@ -367,7 +489,7 @@ def barrel_roll(data_stream, radius=1, tau0=120*2, zeta0=40):
         if min_idx is None:
             return None
         return (min_idx, data_stream[min_idx])
-    
+
     points = [contact_point]
     while points[-1][0] < len(data_stream):
         next_point = next_contact_point(points[-1])
