@@ -21,7 +21,7 @@ def collect_and_plot(start_date: datetime, duration: timedelta, logger: logging.
     corrected_vtecs, sat_biases, rcvr_biases, tecs, cal_dat, station_vtecs, conn_map = \
         post_ambiguity_computation(conns, station_data, station_locs, logger=logger)
 
-    plot_stations(corrected_vtecs, logger, start_date, stations)
+    plot_stations(corrected_vtecs, start_date, stations, logger)
 
 
 def plot_stations(corrected_vtecs, start_date, stations, logger = _LOG, suffix = None):
@@ -76,13 +76,13 @@ def get_station_connection_data(duration, start_date, logger = _LOG):
 
     # ask Laika for station location data + GNSS data from our stations
     logger.info("Gathering GNSS data from stations...")
-    station_locs, station_data = get_data.populate_data(dog, start_date, duration, stations)
 
+    scenario = get_data.ScenarioInfo(dog, start_date, duration, stations)
     # turn our station data into "connections" which are periods of
     # signal lock without cycle slips
     logger.info("Reorganizing data into connections")
-    conns = connections.get_connections(dog, station_locs, station_data)
-    return conns, station_data, station_locs, stations
+    conns = connections.get_connections(scenario)
+    return conns, scenario
 
 
 if __name__ == "__main__":
