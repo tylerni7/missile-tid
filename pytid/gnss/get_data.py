@@ -95,10 +95,11 @@ def download_misc_igs_station(time, station_name, cache_dir):
         return filepath
     except IOError:
         url_bases = (
+        'ftp://nfs.kasi.re.kr/gps/data/daily/',
         'ftp://igs.gnsswhu.cn/pub/gps/data/daily/',
-        'ftp://cddis.nasa.gov/gnss/data/daily/',
+        'ftp://cddis.nasa.gov/gnss/data/daily/'
         )
-        folder_path += "20o/"
+        folder_path += t.strftime("%yo/")
         try:
             filepath = download_file(url_bases, folder_path, cache_subdir, filename, compression='.Z')
             return filepath
@@ -127,8 +128,8 @@ def data_for_station(dog, station_name, date):
         else:
             raise DownloadError
 
-    obs_data = RINEXFile(rinex_obs_file)
-    return station_pos, raw.read_rinex_obs(obs_data, rate=30)
+    obs_data = RINEXFile(rinex_obs_file, rate=30)
+    return station_pos, raw.read_rinex_obs(obs_data)
 
 
 # want to create:
