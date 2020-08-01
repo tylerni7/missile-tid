@@ -3,13 +3,13 @@ from laika.lib import coordinates
 import logging
 import math
 from matplotlib import animation, cm, pyplot as plt
-from mpl_toolkits.basemap import Basemap
+import cartopy
+import cartopy.feature as cpf
 import numpy
 import os
 
 from pytid.gnss import get_data
 from pytid.utils.configuration import Configuration
-
 
 config = Configuration()
 constellation_size = config.gnss.get("constellation_size")
@@ -192,6 +192,73 @@ def plot_filter_map(vtec, stations, start_date, short_min=2, long_min=12, frames
                 vals.append(filtered[station][prn][i])
 
         scatter.set_offsets(numpy.array(globe(lons, lats)).T)
+        max_tec = 0.1
+        min_tec = -0.1
+        scatter.set_color( cm.plasma(numpy.maximum(numpy.array(vals) - min_tec, 0) / (max_tec - min_tec)) )
+
+    def init():
+        scatter.set_offsets([])
+
+    ani = animation.FuncAnimation(plt.gcf(), animate, init_func=init, frames=frames, repeat=True, interval=60)
+
+    #globe.draw()
+    #globe.show(block=False)
+    plt.show()
+    return ani
+
+
+
+def plot_filter_map(vtec, stations, start_date, short_min=2, long_min=12, frames=None):
+    ax = plt.axes(projection=cartopy.crs.PlateCarree())
+    #ax.add_feature(cpf.LAND)
+    #ax.add_feature(cpf.OCEAN)
+    ax.add_feature(cpf.COASTLINE)
+    #ax.add_feature(cpf.BORDERS, linestyle=':')
+
+    scatter = ax.scatter([], [])
+
+    ax.set_extent([122, 130, 32, 40])
+
+    print("filtering")
+    filtered = dict()
+    for station in stations:
+        filtered[station] = dict()
+        for prn in get_data.satellites:
+            if prn not in vtec[station]:
+                continue
+            filtered[station][prn] = get_data.filter_contiguous(
+                [(x if x else math.nan) for x in vtec[station][prn][1]],
+                short_min=short_min,
+                long_min=long_min
+            )
+    print("filtering done")
+
+    #ttext = plt.text(2.5e7, 1.98e7, "", bbox={'facecolor':'w', 'alpha':0.5, 'pad':5})
+    def animate(i):
+        plt.title( str(timedelta(seconds=i * 30) + start_date) )
+
+        lons = []
+        lats = []
+        vals = []
+        for station in stations:
+            for prn in get_data.satellites:
+                if prn not in vtec[station] or i >= len(vtec[station][prn][0]):
+                    continue
+                try:
+                    ecef = vtec[station][prn][0][i]
+                except IndexError:
+                    print(station, prn, i)
+                    raise
+                if ecef is None:
+                    continue
+                lat, lon, _ = coordinates.ecef2geodetic(ecef)
+                lon = lon if lon > 0 else lon + 360
+                lons.append(lon)
+                lats.append(lat)
+
+                vals.append(filtered[station][prn][i])
+
+        scatter.set_offsets(numpy.array((lons, lats)).T)
         max_tec = 0.1
         min_tec = -0.1
         scatter.set_color( cm.plasma(numpy.maximum(numpy.array(vals) - min_tec, 0) / (max_tec - min_tec)) )

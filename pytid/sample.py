@@ -5,7 +5,7 @@ from laika.lib import coordinates
 import logging
 
 from pytid.utils.configuration import Configuration
-from pytid.gnss import bias_solve, connections, get_data, plot
+from pytid.gnss import bias_solve, connections, get_data
 
 conf = Configuration()
 
@@ -35,6 +35,17 @@ ca_stations = [
     "p003"
 ]
 
+# stations near west coast of korea
+kr_stations = [
+    'gage', 'gasa', 'kwnj', 'swgj', 'kusn', 'naju', 'nons',
+    'nsan', 'dang', 'mara', 'mldo', 'mkpo', 'sman', 'sgui',
+    'schn', 'gryb', 'eoch', 'yonk', 'jahg', 'junj', 'jung',
+    'jeju', 'chju', 'jejo', 'swjj', 'jjbg', 'jind', 'jndo',
+    'chny', 'chyg', 'hgdo', 'hsbg', 'hwsg', 'dagr', 'iche',
+    'goch', 'boen', 'hadg', 'ulsn', 'gosg', 'kimc', 'jsbg',
+    'gijn', 'yodk', 'wols', 'samc'
+]
+
 """
 from geopy.geocoders import Nominatim
 geocoder = Nominatim(user_agent="tid")
@@ -49,7 +60,7 @@ print(" ".join(stations))
 start_date = datetime.strptime("2019-06-12", "%Y-%m-%d")
 """
 
-stations = ca_stations
+stations = kr_stations
 
 """
 # crew dragon launch in FL: May 30, 2020, 15:22 EDT / 19:22 UTC
@@ -57,10 +68,13 @@ start_date = datetime.strptime("2020-05-30", "%Y-%m-%d")
 
 # spacex launch in FL: February 17, 2020, 15:05 UTC
 start_date = datetime.strptime("2020-02-17", "%Y-%m-%d")
-"""
 
 # spacex launch in CA: June 12, 2019, 14:17 UTC
 start_date = datetime.strptime("2019-06-12", "%Y-%m-%d")
+"""
+# spacex launch in CA: June 12, 2019, 14:17 UTC
+start_date = datetime.strptime("2020-07-15", "%Y-%m-%d")
+start_date = datetime.strptime("2020-03-23", "%Y-%m-%d")
 
 
 duration = timedelta(days=1)
