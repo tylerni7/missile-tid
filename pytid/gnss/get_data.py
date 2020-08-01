@@ -6,11 +6,15 @@ nice usable datastructures
 from collections import defaultdict
 import copy
 from datetime import datetime, timedelta
-from scipy.signal import butter, filtfilt
+import io
+import json
 import math
 import numpy
 import os
 import pickle
+import requests
+from scipy.signal import butter, filtfilt
+import zipfile
 
 from laika import constants
 from laika.downloader import download_cors_station, download_file
@@ -28,7 +32,6 @@ default_len = int(24*60/0.5)
 # GPS has PRN 1-32; GLONASS has 1-23 but could use more?
 satellites = ['G%02d' % i for i in range(1,33)] + ['R%02d' % i for i in range(1,25)]
 
-
 """
 Couldn't find good data source so used
 http://geodesy.unr.edu/ who has data
@@ -37,6 +40,7 @@ Blewitt, G., W. C. Hammond, and C. Kreemer (2018),
 Harnessing the GPS data explosion for interdisciplinary science, Eos, 99,
 https://doi.org/10.1029/2018EO104623
 """
+station_network_info = json.load(open(os.path.dirname(__file__) + "/station_networks.json"))
 extra_station_info_path = os.path.dirname(__file__) + "/stations.pickle"
 extra_station_info = pickle.load(open(extra_station_info_path, "rb"))
 
@@ -98,12 +102,55 @@ def download_misc_igs_station(time, station_name, cache_dir):
         'ftp://igs.gnsswhu.cn/pub/gps/data/daily/',
         'ftp://cddis.nasa.gov/gnss/data/daily/',
         )
-        folder_path += "20o/"
+        folder_path += t.strftime("%yo/")
         try:
             filepath = download_file(url_bases, folder_path, cache_subdir, filename, compression='.Z')
             return filepath
         except IOError:
             return None
+
+def download_korean_station(time, station_name, cache_dir):
+    """
+    Downloader for Korean stations
+    TODO: we can download from multiple stations at once and save some time here....
+    """
+    json_url = 'http://gnssdata.or.kr/download/createToZip.json'
+    zip_url = 'http://gnssdata.or.kr/download/getZip.do?key=%d'
+
+    cache_subdir = cache_dir + 'korean_obs/'
+    t = time.as_datetime()
+    # different path formats...
+    folder_path = cache_subdir + t.strftime('%Y/%j/')
+    filename = folder_path + station_name + t.strftime("%j0.%yo")
+
+    if os.path.isfile(filename):
+        return filename
+    elif not os.path.exists(folder_path):
+        os.makedirs(folder_path, exist_ok=True)
+
+    start_day = t.strftime("%Y%m%d")
+    postdata = {
+        'corsId': station_name.upper(),
+        'obsStDay':start_day,
+        'obsEdDay':start_day,
+        'dataTyp': 30
+    }
+    res = requests.post(json_url, data=postdata).text
+    if not res:
+        raise DownloadError
+    res_dat = json.loads(res)
+    if not res_dat.get('result', None):
+        raise DownloadError
+
+    key = res_dat['key']
+    zipstream = requests.get(zip_url % key, stream=True)
+    zipdat = zipfile.ZipFile(io.BytesIO(zipstream.content))
+    for zf in zipdat.filelist:
+        station = zipfile.ZipFile(io.BytesIO(zipdat.read(zf)))
+        for rinex in station.filelist:
+            if rinex.filename.endswith("o"):
+                open(filename, "wb").write(station.read(rinex))
+    return filename
 
 def data_for_station(dog, station_name, date):
     """
@@ -113,22 +160,36 @@ def data_for_station(dog, station_name, date):
     """
     time = GPSTime.from_datetime(date)
     rinex_obs_file = None
-    try:
-        station_pos = get_station_position(station_name, cache_dir=dog.cache_dir)
-        rinex_obs_file = download_cors_station(time, station_name, cache_dir=dog.cache_dir)
-    except (KeyError, DownloadError):
-        pass
 
-    if not rinex_obs_file:
-        # station position not in CORS map, try another thing
-        if station_name in extra_station_info:
-            station_pos = numpy.array(extra_station_info[station_name])
-            rinex_obs_file = download_misc_igs_station(time, station_name, cache_dir=dog.cache_dir)
-        else:
-            raise DownloadError
+    # handlers for specific networks
+    handlers = {
+        'Korea': download_korean_station
+    }
 
-    obs_data = RINEXFile(rinex_obs_file)
-    return station_pos, raw.read_rinex_obs(obs_data, rate=30)
+    network = station_network_info.get(station_name, None)
+
+    # no special network, so try using whatever
+    if network is None:
+        try:
+            station_pos = get_station_position(station_name, cache_dir=dog.cache_dir)
+            rinex_obs_file = download_cors_station(time, station_name, cache_dir=dog.cache_dir)
+        except (KeyError, DownloadError):
+            pass
+
+        if not rinex_obs_file:
+            # station position not in CORS map, try another thing
+            if station_name in extra_station_info:
+                station_pos = numpy.array(extra_station_info[station_name])
+                rinex_obs_file = download_misc_igs_station(time, station_name, cache_dir=dog.cache_dir)
+            else:
+                raise DownloadError
+
+    else:
+        station_pos = numpy.array(extra_station_info[station_name])
+        rinex_obs_file = handlers[network](time, station_name, cache_dir=dog.cache_dir)
+
+    obs_data = RINEXFile(rinex_obs_file, rate=30)
+    return station_pos, raw.read_rinex_obs(obs_data)
 
 
 # want to create:
