@@ -99,8 +99,9 @@ def download_misc_igs_station(time, station_name, cache_dir):
         return filepath
     except IOError:
         url_bases = (
+        'ftp://nfs.kasi.re.kr/gps/data/daily/',
         'ftp://igs.gnsswhu.cn/pub/gps/data/daily/',
-        'ftp://cddis.nasa.gov/gnss/data/daily/',
+        'ftp://cddis.nasa.gov/gnss/data/daily/'
         )
         folder_path += t.strftime("%yo/")
         try:
@@ -187,7 +188,7 @@ def data_for_station(dog, station_name, date):
     else:
         station_pos = numpy.array(extra_station_info[station_name])
         rinex_obs_file = handlers[network](time, station_name, cache_dir=dog.cache_dir)
-
+        
     obs_data = RINEXFile(rinex_obs_file, rate=30)
     return station_pos, raw.read_rinex_obs(obs_data)
 
