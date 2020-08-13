@@ -1,7 +1,9 @@
 import os, logging
 import yaml
 
-default_config = os.path.join("config", "configuration.yml")
+# start with the abosolute path in case we run it from other places...
+missile_tid_rootfold = os.path.abspath(os.path.join(os.path.split(os.path.abspath(__file__))[0], '..', '..'))
+default_config = os.path.join(missile_tid_rootfold, "config", "configuration.yml")
 
 
 

@@ -85,7 +85,7 @@ class Connection:
             if not this_data[tick].processed:
                 if not this_data[tick].process(self.scenario.dog):
                     continue
-            
+
             if FULL_CORRECTION and not this_data[tick].corrected:
                 this_data[tick].correct(self.loc, self.scenario.dog)
 
@@ -130,6 +130,22 @@ class Connection:
             self.ticks = [tick]
             self.tick0 = tick
             self.tickn = tick
+
+    def remove_missing_sat_clock_err_ticks(self, scenario):
+        '''
+        For some ticks in a connection the sat_clock_error might be missing from laika.
+        If that is the case, just boot that tick from the collection.
+        '''
+        tind_offset = 0
+        for tind in range(len(self.ticks)):
+            t=self.ticks[tind-tind_offset]
+            if math.isnan(scenario.station_data[self.station][self.prn][t].sat_clock_err):
+                tout = self.ticks.pop(tind-tind_offset)
+                self.ticks_missing_sat_clock_err.append(tout)
+                tind_offset+=1
+        if len(self.ticks)>0:
+            self.tick0 = self.ticks[0]
+            self.tickn = self.ticks[-1]
 
     def set_ticks(self, ticks_filtered):
         '''

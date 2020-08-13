@@ -38,7 +38,13 @@ def calc_vtec(scenario, station, prn, tick, ionh=IONOSPHERE_H, el_cut=0.3, n1=0,
     at which that TEC applies (between the sat and the rec). Checks to see whether the satellite is too low in
     the sky and returns None if so.
 
-    Returns: ( ... , ... , ... )
+    Here the STEC estimate is pretty simple:
+
+        STEC = [f_1**2 X f_2**2/(f_1**2 - f_2**2)] X [(Phi_1 - n1)/f_1 - (Phi_2 - n2)/f_2]*C
+                |----  ^Delay Factor      -----|     |-----   Carrier-Phase Delay    ------|
+
+    If we have receiver or satellite clock biases, those are included.
+    Returns: ( VTEC (i.e. STEC * Slant_to_Vertical , Ionosphere-piercing loc , S-to-V factor )
     """
     measurement = scenario.station_data[station][prn][tick]
     if measurement is None:
@@ -60,7 +66,7 @@ def calc_vtec(scenario, station, prn, tick, ionh=IONOSPHERE_H, el_cut=0.3, n1=0,
     )
     if res is None:
         return None
-    
+
     phase_diff, delay_factor = res
     stec = phase_diff * delay_factor / K
 
@@ -78,9 +84,12 @@ def calc_vtec(scenario, station, prn, tick, ionh=IONOSPHERE_H, el_cut=0.3, n1=0,
 
 def s_to_v_factor(el, ionh=IONOSPHERE_H):
     '''
-    Converts between S and V. (Slant and Vertical?)
-    :param el:
-    :param ionh:
+    Converts between S and V. (Slant and Vertical?). See the Springer Handbook, equation (6.99) for this
+    formula. Note that this is raised to the 1/2 power instead of -1/2 because we are going from STEC
+    to VTEC but (6.99) goes the other way.
+    :param el:  Elevation angle
+    :param ionh: Height of the ionosphere in the zenith direction. Note that this shoould
+                    already have Earth's Radius added in (as IONOSPHERE_H does above).
     :return:
     '''
     return math.sqrt(1 - (math.cos(el) * constants.EARTH_RADIUS / ionh) ** 2)
