@@ -20,6 +20,21 @@ DEBUG=True
 # DATETIME_FMT_PRINTABLE = '%Y-%m-%d - %H:%M:%S'
 
 checkpoint_list=[(datetime.datetime.now(), 'Module Loaded')]
+def io_save_to_pickle(dat, file_path):
+    '''Simple wrapper function to save time when saving data as a pickled file.'''
+    import pickle
+    tgt_path = os.path.abspath(file_path)
+    with open(tgt_path, 'wb') as dat_f:
+        pickle.dump(dat, dat_f)
+
+def io_load_from_pickle(file_path):
+    '''Simple wrapper function to save time when loading data as a pickled file.'''
+    import pickle
+    tgt_path = os.path.abspath(file_path)
+    with open(tgt_path, 'rb') as dat_f:
+        dat = pickle.load(dat_f)
+    return dat
+
 def get_mem_usage(PID):
     '''DEBUGGING function. Runs a system call to get the memory usage (virtual, resident set) for a particular process ID.'''
     time.sleep(1)
@@ -110,21 +125,6 @@ def tps_kernel_matrix(xr, xc):
     np.seterr(divide=div_curr, invalid=inv_curr)
     return K
 
-def tps_file_size(n, n_Xnew, incl_vec):
-    '''Computes the expected array size for the saved thin-plate spline numpy file'''
-    sz = 8 + n + n*3
-    sz += (n if incl_vec[0] else 0)
-    sz += (3 if incl_vec[1] else 0)
-    sz += (n**2 if incl_vec[2] else 0)
-    sz += (n_Xnew*3 if incl_vec[3] else 0)
-    sz += (n_Xnew*n if incl_vec[4] else 0)
-    return sz
-
-def file_size_err_msg(n, n_Xnew, incl_vec, actual_size):
-    '''Composes the error message reporting that the array size is not as expected.'''
-    outmsg='File Size Error: file returned array of size %s, with n=%s, ' % (actual_size, n)
-    outmsg=outmsg+'n_Xnew=%s, incl_vec=%s for a predicted array size of %s.' % (n_Xnew, str(tuple(incl_vec)))
-    return outmsg
 
 def get_lat_lon_lists(lon_res, lat_res, NSWE_bounds):
     '''Returns two lists of points, one for lat and one for lon, that are spaced evenly between the bounds of the map.
@@ -153,6 +153,8 @@ def get_lat_lon_lists(lon_res, lat_res, NSWE_bounds):
     return lon_list, lat_list, lon_res_adj, lat_res_adj
 
 def get_lons_in_Xrange_for_horizontal_band(X, center_lat, lat_halfwidth, lon_list, lon_res):
+    '''For a particular horizontal band on the map, return a grid of evenly spaced longitudes
+    contained within the range of the X-values in that band.'''
     # TODO: figure out what to do if East-West map boundaires span the international date line.
     minlat = center_lat - lat_halfwidth;
     maxlat = center_lat + lat_halfwidth;
@@ -195,7 +197,7 @@ class ThinPlateSpline():
         '''
         # if a file path to load is specified, default to that...
         if from_file_path is not None and os.path.isfile(from_file_path):
-            self.load_from_numpy_array_file(from_file_path)
+            self.load_from_pickle_file(from_file_path)
             return
         # ...otherwise use the inputs (if any are given)
         if X is not None and Y is not None:
@@ -215,82 +217,55 @@ class ThinPlateSpline():
         if lambda_smoothing is not None:
             self.lambdasmooth = lambda_smoothing
 
-    def save_as_numpy_array_file(self, file_path):
-        '''
-        Saves a binary numpy array with the essentials, in order (lengths below,):
-            [n, lambda, n_new], [includes vec], Y, X, w_hat, a_hat, K, Xnew, Knew
-            3, 5, n, n*3, n, 3, n^2, (n_Xnew * 3), (n_Xnew * n)
-        Does not save the Y_hat or Ynew_hat values because these are easily computed.
-        For re-opening, the lenghts of these are [2, 5, n*3, n,
-        '''
-        incl_W = 0. if self.w_hat is None else 1.
-        incl_A = 0. if self.a_hat is None else 1.
-        incl_K = 0. if self.K is None else 1.
-        incl_Xnew = 0. if self.Xnew is None else 1.
-        incl_Knew = 0. if self.Knew is None else 1.
-        incl_vec_np = np.array([incl_W, incl_A, incl_K, incl_Xnew, incl_Knew], dtype=np.float64)
-        n_Xnew = 0. if self.Xnew is None else self.Xnew.shape[0]
-        n_lambda_np = np.array([self.n, self.lambdasmooth, n_Xnew], dtype=np.float64)
-        out_vec = np.hstack((n_lambda_np, incl_vec_np, self.Y.ravel(), self.X.ravel(),
-                             self.w_hat.ravel() if incl_W else np.array([]),
-                             self.a_hat.ravel() if incl_A else np.array([]),
-                             self.K.ravel() if incl_K else np.array([]),
-                             self.Xnew.ravel() if incl_Xnew else np.array([]),
-                             self.Knew.ravel() if incl_Knew else np.array([])
-                             ))
-        out_vec.tofile(file_path)
-        if self.verbose:
-            print('Saved thin-plate spline model to file %s' % file_path)
-
-    def load_from_numpy_array_file(self, file_path):
-        '''
-        Gets the saved version created by the function above. Should populate all the important stuff.
-        '''
-        out_vec = np.fromfile(file_path, dtype=np.float64)
-        N = out_vec[0].astype(np.int32).item(); self.n = N;
-        self.lambdasmooth = out_vec[1].item()
-        n_Xnew = out_vec[2].astype(np.int32).item()
-        incl_W = out_vec[3]; incl_A = out_vec[4]; incl_K = out_vec[5]; incl_Xnew = out_vec[6]; incl_Knew = out_vec[7];
-        predicted_file_array_size = tps_file_size(N, n_Xnew, out_vec[3:8])
-        assert out_vec.shape[0]==predicted_file_array_size, file_size_err_msg(N, n_Xnew, out_vec[3:8], out_vec.shape[0])
-
-        curr_ind = 8
-        self.Y = out_vec[curr_ind:(curr_ind+N)].reshape((N, 1))
-        curr_ind += N
-        self.X = out_vec[curr_ind:(curr_ind + 3 * N)].reshape((N, 3))
-        curr_ind += 3*N
-        if incl_W:
-            self.w_hat = out_vec[curr_ind:(curr_ind + N)].reshape((N,1))
-            curr_ind += N
-        if incl_A:
-            self.a_hat = out_vec[curr_ind:(curr_ind + 3)].reshape((3,1))
-            curr_ind += 3
-        if incl_K:
-            self.K = out_vec[curr_ind:(curr_ind + N**2)].reshape((N,N))
-            curr_ind += N**2
-        if incl_W and incl_A and incl_K:
-            self.fit_Y_hat()
-        if incl_Xnew:
-            self.Xnew = out_vec[curr_ind:(curr_ind + n_Xnew*3)].reshape((n_Xnew, 3))
-            curr_ind += 3*n_Xnew
-        if incl_Knew:
-            self.Knew = out_vec[curr_ind:(curr_ind + n_Xnew*N)].reshape((n_Xnew, N))
-            curr_ind += n_Xnew * N
-        if incl_A and incl_W and incl_Xnew and incl_Knew:
-            self.Ynew_hat = self.Xnew.dot(self.a_hat) + self.Knew.dot(self.w_hat)
-
     def save_as_pickle_file(self, file_path=None):
         '''Saves this object as a pickle file rather than a giant numpy array. (Or tries to anyway, I'm not sure
-        if this function works or has been tested).
+        if this function works or has been tested). Basically just saves a python dictionary of the most important
+        attributes.
         '''
-        self.Kernel_Xnew = None
         if file_path is not None:
             self.self_pickle_file_path = file_path
-            save_to_pickle_file(self, self.self_pickle_file_path)
-        elif self.self_pickle_file_path is not None:
-            save_to_pickle_file(self, self.self_pickle_file_path)
-        else:
-            print('No file path given for pickle destination.')
+        if self.self_pickle_file_path is None:
+            raise FileNotFoundError
+        tps_data = {
+            'X': self.X,
+            'Y': self.Y,
+            'n': self.n,
+            'K': self.K,
+            'lambdasmooth': self.lambdasmooth,
+            'w_hat': self.w_hat,
+            'a_hat': self.a_hat,
+            'Y_hat': self.Y_hat,
+            'e_hat': self.e_hat,
+            'std_err_resid': self.std_err_resid,
+            'Xnew': self.Xnew,
+            'Ynew_hat': self.Ynew_hat,
+            'Knew': self.Knew,
+            'self_pickle_file_path': self.self_pickle_file_path
+        }
+        io_save_to_pickle(tps_data, self.self_pickle_file_path)
+
+    def load_from_pickle_file(self, file_path=None):
+        '''Loads the data for a previously created TPS from a pickle file. Must be in the same form as saved
+        by self.save_to_pickle_file.
+        '''
+        if file_path is not None:
+            self.self_pickle_file_path = file_path
+        if self.self_pickle_file_path is None:
+            raise FileNotFoundError
+        tps_data = io_load_from_pickle(self.self_pickle_file_path)
+        self.X = tps_data['X']
+        self.Y = tps_data['Y']
+        self.n = tps_data['n']
+        self.K = tps_data['K']
+        self.lambdasmooth = tps_data['lambdasmooth']
+        self.w_hat = tps_data['w_hat']
+        self.a_hat = tps_data['a_hat']
+        self.Y_hat = tps_data['Y_hat']
+        self.e_hat = tps_data['e_hat']
+        self.std_err_resid = tps_data['std_err_resid']
+        self.Xnew = tps_data['Xnew']
+        self.Ynew_hat = tps_data['Ynew_hat']
+        self.Knew = tps_data['Knew']
 
     def copy_from_existing_TPS(self, existing_TPS):
         '''
@@ -315,8 +290,7 @@ class ThinPlateSpline():
         st = datetime.datetime.now()
         if self.verbose:
             print('Computing K matrix beginning at %s' % st.strftime(DATETIME_FMT_PRINTABLE), end = '', flush=True)
-        # kmat_func = np.vectorize(lambda i, j: Kernel_TPS(self.X[i, :], self.X[j, :]))
-        # self.K = np.fromfunction(kmat_func, (self.n,self.n), dtype=np.int32)
+
         self.K = tps_kernel_matrix(self.X[:,1:], self.X[:,1:])
         if self.verbose:
             et = datetime.datetime.now()
@@ -326,7 +300,6 @@ class ThinPlateSpline():
         '''
         Solves the TP-Spline for the input values. Gets the W and A parameter vectors and additionally computes
         fitted Y values and residuals.
-        :return:
         '''
         if self.K is None:
             if self.verbose:
@@ -359,7 +332,8 @@ class ThinPlateSpline():
 
     def report_diagnostics(self):
         '''
-        This is a work in progress. Essentially should be sort of like a 'summary' function in R.
+        This is a work in progress. Essentially should be sort of like a 'summary' function in R. At the very least
+        we want sample size, std err and that sort of stuff.
         '''
         print('Sample Size:    %s' % self.n)
         print('Mean Residual:  %s' % np.mean(self.e_hat).item())
@@ -368,22 +342,17 @@ class ThinPlateSpline():
     def predict(self, Xnew, store_XYKnew = False):
         '''
         Computes predicted value of the spline at a new point(s) Xnew. Xnew must be in the same format at self.X (i.e.
-        for K different points it should be (K x 3) with each row in homogenous coordinates: [1.0, x, y])
+        for K different points it should be (K x 3) with each row in homogenous coordinates: [1.0, x, y]). Since a set
+        of predictions can range in its importance to the model itself, there is the option to store this information with
+        the model so it may not need to be calculated again. There is also a function clear_predictions() to remove any
+        old predictions.
+
         :param Xnew: (K x 3) numpy array of points in X-domain for which to compute fitted value.
         :return: (K x 1) numpy array of predicted values
         '''
-        # self.Kernel_Xnew = lambda xnew: np.fromfunction(np.vectorize(lambda i: Kernel_TPS(self.X[i, :], xnew)),
-        #                                                 (self.n,), dtype=np.int32)
         k = Xnew.shape[0]
         assert Xnew.shape[1] == 3, 'variable Xnew must have width 3'
-
-        Kmat_Xnew = np.zeros((k, self.n), dtype=np.float64)
-        for i in range(k):
-            Kmat_Xnew[i,:] = self.Kernel_Xnew(Xnew[i,:])
-            if self.verbose:
-                print('Computing Kernel matrix prediction points. %s of %s done.' % (i+1, k), end = '\r', flush=True)
-        if self.verbose:
-            print('')
+        Kmat_Xnew = tps_kernel_matrix(Xnew[:,1:], self.X[:,1:])
 
         Ynew_hat = Xnew.dot(self.a_hat) + Kmat_Xnew.dot(self.w_hat)
         if store_XYKnew:
@@ -395,6 +364,7 @@ class ThinPlateSpline():
             return Ynew_hat
 
     def clear_predictions(self):
+        '''Removes old values of self.Xnew, self.Ynew_hat, self.Knew'''
         if self.Xnew is not None:
             del self.Xnew; self.Xnew = None;
         if self.Ynew_hat is not None:
