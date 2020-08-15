@@ -10,11 +10,13 @@ import io
 import json
 import math
 import numpy
+import pandas as pd
 import os
 import pickle
 import requests
 from scipy.signal import butter, filtfilt
 import zipfile
+import ftplib
 
 from laika import constants
 from laika.downloader import download_cors_station, download_file
@@ -25,6 +27,7 @@ from laika.dgps import get_station_position
 import laika.raw_gnss as raw
 
 from pytid.gnss import tec
+from pytid.utils.configuration import missile_tid_rootfold
 
 # one day worth of samples every 30 seconds
 default_len = int(24*60/0.5)
@@ -158,6 +161,10 @@ def data_for_station(dog, station_name, date):
     Get data from a particular station and time. Wraps a number of laika function calls.
     Station names are CORS names (eg: 'slac')
     Dates are datetimes (eg: datetime(2020,1,7))
+
+    The raw.read_rinex_obs(obs_data) object that is returned at the end is a list-of-lists
+    of RAWGNSSMeasurement types. The outer list proceeds over the time points in the particular
+    day, and the inner list proceeds over PRN (including GLONASS prns).
     """
     time = GPSTime.from_datetime(date)
     rinex_obs_file = None
@@ -172,7 +179,7 @@ def data_for_station(dog, station_name, date):
     # no special network, so try using whatever
     if network is None:
         try:
-            station_pos = get_station_position(station_name, cache_dir=dog.cache_dir)
+            # station_pos = get_station_position(station_name, cache_dir=dog.cache_dir)
             rinex_obs_file = download_cors_station(time, station_name, cache_dir=dog.cache_dir)
         except (KeyError, DownloadError):
             pass
@@ -180,17 +187,153 @@ def data_for_station(dog, station_name, date):
         if not rinex_obs_file:
             # station position not in CORS map, try another thing
             if station_name in extra_station_info:
-                station_pos = numpy.array(extra_station_info[station_name])
+                # station_pos = numpy.array(extra_station_info[station_name])
                 rinex_obs_file = download_misc_igs_station(time, station_name, cache_dir=dog.cache_dir)
             else:
                 raise DownloadError
-
     else:
-        station_pos = numpy.array(extra_station_info[station_name])
+        # station_pos = numpy.array(extra_station_info[station_name])
         rinex_obs_file = handlers[network](time, station_name, cache_dir=dog.cache_dir)
         
     obs_data = RINEXFile(rinex_obs_file, rate=30)
-    return station_pos, raw.read_rinex_obs(obs_data)
+    # return station_pos, raw.read_rinex_obs(obs_data)
+    return raw.read_rinex_obs(obs_data)
+
+def meas_to_tuple(ms, stn, tick):
+    return (stn, ms.prn, tick,                                                                              #indexes
+            ms.observables.get('C1C', math.nan), ms.observables.get('C2C', math.nan),
+            ms.observables.get('C2P', math.nan), ms.observables.get('C5C', math.nan),
+            ms.observables.get('L1C', math.nan), ms.observables.get('L2C', math.nan),
+            ms.observables.get('L5C', math.nan),
+            ms.recv_time_sec, ms.recv_time_week,                                                            #recv_time
+            ms.sat_clock_err,                                                                               #sat_clock_err
+            ms.sat_pos[0].item(), ms.sat_pos[1].item(), ms.sat_pos[2].item(),                               #sat_pos
+            ms.sat_vel[0].item(), ms.sat_vel[1].item(), ms.sat_vel[2].item()                                #sat_vel
+            )
+
+
+def data_for_station_npstruct(dog, station_name, date, prn_list=None, t0_date=None):
+    '''
+    This function will wrap the one above, but instead of returning this cumbersome list-of-lists, it
+    will convert it into a structured numpy array.
+    :param dog:             (self-explanatory)
+    :param station_name:    (self-explanatory)
+    :param date:            (self-explanatory, start date for this particular data pull)
+    :param prn_list:        a list of specific prns that should be restricted to (e.g. GPS)
+    :param t0_date:         (datetime) representing the tick-0 point. For calibrating ticks.
+
+    :return: a structured numpy array containing the results.
+    '''
+    t0 = GPSTime.from_datetime(date) if t0_date is None else GPSTime.from_datetime(t0_date)
+    def meas_tick_calc(ms):
+        return round((ms.recv_time - t0)/30.0)
+
+    raw_obs = data_for_station(dog, station_name, date)
+
+    # find out how big it needs to be:
+    if prn_list is not None:
+        prn_set = set(prn_list)
+        tot_meas_ct = sum([len(list(filter(lambda x: x.prn in prn_set, i))) for i in raw_obs])
+    else:
+        tot_meas_ct = sum(list(map(len, raw_obs)))
+    # Initialize the array
+    dfs = numpy.empty(tot_meas_ct,
+                   dtype=[('station', 'U4'), ('prn', 'U3'), ('tick', 'i4'), ('C1C', 'f8'), ('C2C', 'f8'), ('C2P', 'f8'),
+                          ('C5C', 'f8'), ('L1C', 'f8'), ('L2C', 'f8'), ('L5C', 'f8'), ('recv_time_sec', 'f4'),
+                          ('recv_time_week', 'i4'), ('sat_clock_err', 'f8'), ('sat_pos_x', 'f8'), ('sat_pos_y', 'f8'),
+                          ('sat_pos_z', 'f8'), ('sat_vel_x', 'f8'), ('sat_vel_y', 'f8'), ('sat_vel_z', 'f8')])
+    # Populate it one row at a time.
+    rw=0
+    for i in range(len(raw_obs)):
+        for j in range(len(raw_obs[i])):
+            if prn_list is not None and raw_obs[i][j].prn in prn_list:
+                dfs[rw] = meas_to_tuple(raw_obs[i][j], station_name, meas_tick_calc(raw_obs[i][j]))
+                rw += 1
+            if prn_list is None:
+                dfs[rw] = meas_to_tuple(raw_obs[i][j], station_name, meas_tick_calc(raw_obs[i][j]))
+                rw += 1
+
+    return dfs.reshape((tot_meas_ct,1))
+
+def get_dates_in_range(start_dt, durr):
+    '''returns a list of datetime objects separated by a day that fall in the range of start_dat and durration.'''
+    dates = []
+    date_var = start_dt
+    while date_var < start_dt + durr:
+        dates.append(date_var)
+        date_var += timedelta(days=1)
+    return dates
+
+def get_cors_station_lists_for_day(dt):
+    '''For a particular day, pulls a list of CORS stations that have data posted for each of the two CORS sites.
+    Technically it just returns a directory listing limited only to items of length 4, but this will do.'''
+    # f1 = 'ftp://geodesy.noaa.gov/cors/rinex/'
+    # f2 = 'ftp://alt.ngs.noaa.gov/cors/rinex/'
+    print('getting cors station list for %s' % dt)
+    f1='geodesy.noaa.gov'
+    f2='alt.ngs.noaa.gov'
+    day_folder = "/cors/rinex/" +  dt.strftime('%Y/%j/')
+    ftp = ftplib.FTP(f1, "anonymous", "")
+    f1nlst = ftp.nlst(day_folder)
+    ftp.quit()
+    ftp = ftplib.FTP(f2, "anonymous", "")
+    f2nlst = ftp.nlst(day_folder)
+    ftp.quit()
+    f1sta = list(filter(lambda x: len(x)==4, list(map(lambda x: x.replace(day_folder,''), f1nlst))))
+    f2sta = list(filter(lambda x: len(x) == 4, list(map(lambda x: x.replace(day_folder, ''), f2nlst))))
+    return f1sta, f2sta
+
+def cors_download_commands(stns, dt_list, out_script='bash_cors_obs_download.sh', cache_dir='~/.gnss_cache'):
+    '''
+    :param stns:
+    :param dt_list:
+    :param out_script: name of the file for the bash script. It will natrually be thrown in the 'scripts' folder.
+    :param cache_dir: the one from AstroDog
+    :return:
+    '''
+    def get_dt_cors_stns(dt):
+        '''Helper function to ID the subset of <stns> that will have CORS files to download.'''
+        cors_stns = get_cors_station_lists_for_day(dt)
+        my_cors_stns_tup = (set(stns).intersection(list(cors_stns[0])), set(stns).intersection(list(cors_stns[1])))
+        my_cors_stns = list(set(my_cors_stns_tup[0]).union(set(my_cors_stns_tup[1])))
+        return my_cors_stns
+
+    url_base1='ftp://geodesy.noaa.gov'
+    url_base2='ftp://alt.ngs.noaa.gov'
+    bash_script = open(os.path.join(missile_tid_rootfold, 'scripts', out_script), 'w')
+    if cache_dir[0]=='~':
+        cache_dir = os.path.expanduser(cache_dir)
+
+    def cors_url_to_bash(stn, tgt_date):
+        filename = stn + tgt_date.strftime("%j0.%yo.gz")
+        cors_file_url1 = url_base1 + "/cors/rinex/" + tgt_date.strftime('%Y/%j/') + stn + '/' + filename
+        cors_file_url2 = url_base2 + "/cors/rinex/" + tgt_date.strftime('%Y/%j/') + stn + '/' + filename
+        dl_target_fold = os.path.join(cache_dir, 'cors_obs', tgt_date.strftime('%Y'), tgt_date.strftime('%j'), stn)
+        l1ct = bash_script.write('wget %s -P %s -nc \n' % (cors_file_url1, dl_target_fold))
+        l2ct = bash_script.write('if [ $? -eq 0 ]; then gunzip -c %s > %s ; \n' %
+                                 (os.path.join(dl_target_fold, filename), os.path.join(dl_target_fold, filename)[:-3]))
+        l3ct = bash_script.write('else wget %s -P %s -nc ; \n' % (cors_file_url2 , dl_target_fold))
+        l4ct = bash_script.write('if [ $? -eq 0 ]; then gunzip -c %s > %s   ; fi; fi;\n\n' %
+                                 (os.path.join(dl_target_fold, filename), os.path.join(dl_target_fold, filename)[:-3]))
+
+    for my_dt in dt_list:
+        date_cors_stns = get_dt_cors_stns(my_dt)
+        print('%s - ' % my_dt, end='\r', flush=True)
+        for s in date_cors_stns:
+            print('%s - %s' % (my_dt,s), end='\r', flush=True)
+            cors_url_to_bash(s, my_dt)
+    bash_script.close()
+
+def get_igs_station_lists_for_day(dt):
+    f1=('garner.ucsd.edu' , '/archive/garner/rinex/')
+    f2=('data-out.unavco.org','/pub/rinex/obs/')
+    f3=('nfs.kasi.re.kr','/gps/data/daily/')
+    f4=('igs.gnsswhu.cn','/pub/gps/data/daily/')
+    f5=('cddis.nasa.gov','/gnss/data/daily/')
+
+    #TODO: Finish implementing this
+    pass
+
 
 
 # want to create:
@@ -224,7 +367,8 @@ def empty_factory():
     return None
 
 class ScenarioInfo:
-    def __init__(self, dog, start_date, duration, stations):
+    def __init__(self, dog, start_date, duration, stations, prn_list = None, data_struct='dict'):
+        '''data_struct must be one of ['dict','dense']'''
         self.dog = dog
         self.start_date = start_date
         self.duration = duration
@@ -232,21 +376,23 @@ class ScenarioInfo:
         self._station_locs = None
         self._station_data = None
         self._clock_biases = None
-
         # Local coordinates for the stations we're using
         # this enables faster elevation lookups
         self.station_converters = dict()
+        self.prn_list = prn_list #if we want to restrict the set of available satellites
+        self.station_data_structure = data_struct
+        self.station_data_sources = None
 
     @property
     def station_locs(self):
         if self._station_locs is None:
-            self.populate_data()
+            self.populate_data(method=self.station_data_structure)
         return self._station_locs
 
     @property
     def station_data(self):
         if self._station_data is None:
-            self.populate_data()
+            self.populate_data(method=self.station_data_structure)
         return self._station_data
 
     def station_el(self, station, sat_pos):
@@ -263,10 +409,80 @@ class ScenarioInfo:
         sat_range = numpy.linalg.norm(sat_ned)
         return numpy.arcsin(-sat_ned[2]/sat_range)
 
-    def populate_data(self):
+    def populate_station_locs(self):
+        '''Separates this step from the populate_data step. They didn't really need to be together.'''
+        for station in self.stations:
+            try:
+                self._station_locs[station] = get_station_position(station, cache_dir=self.dog.cache_dir)
+            except KeyError:
+                self._station_locs[station] = numpy.array(extra_station_info[station])
+
+    def prepare_data_sources(self, cache_file_prefix):
+        '''This does some of the legwork up front to see which stations' data can be recruited from where. Right
+        now this just tests for whether it is in the cache folder, and then failing that whether a folder for
+        that station is posted to either of the cors FTP sites on taht particular day. If there is at least
+        one on every day in the range, then that is the plan.
+
+        TODO: Add a round to check the misc_igs websites ater checking the cors sites.'''
+        self.date_list = get_dates_in_range(self.start_date, self.duration)
+        self.station_data_sources = dict.fromkeys(self.stations)
+        print('preparing data sources')
+
+        # First, run through each station to see if we have that pickle file
+        pickle_file_ct = 0
+        for stn in self.stations:
+            cache_name = "cached/%s_%s_%s_to_%s" % ( cache_file_prefix, stn,
+                self.start_date.strftime("%Y-%m-%d"), (self.start_date + self.duration).strftime("%Y-%m-%d"))
+            if os.path.exists(cache_name):
+                self.station_data_sources[stn]=('cached_pickle', cache_name)
+                pickle_file_ct += 1
+
+        # Then pull down the CORS lists for each day:
+        cors_lists = dict.fromkeys(range(len(self.date_list)))
+        for i in range(len(self.date_list)):
+            cors_lists_d = get_cors_station_lists_for_day(self.date_list[i])
+            cors_lists[i] = cors_lists_d
+        cors_ftp_ct = 0
+        for stn in self.stations:
+            if self.station_data_sources[stn] is None:
+                stn_daily_options = []
+                stn_cors_ftp_ok_alldays = True
+                for i in range(len(self.date_list)):
+                    in_f1 = stn in cors_lists[i][0]; in_f2 = stn in cors_lists[i][1]
+                    if (not in_f1) and (not in_f2):
+                        stn_cors_ftp_ok_alldays = False
+                    stn_daily_options.append((in_f1, in_f2))
+                if stn_cors_ftp_ok_alldays:
+                    self.station_data_sources[stn] = ('cors_ftp', stn_daily_options)
+                    cors_ftp_ct += 1
+
+        print('%s total stns, %s are pickled, %s are on CORS ftp sites.' % (len(self.station_data_sources),
+                                                                            pickle_file_ct, cors_ftp_ct))
+
+    def populate_data(self, method='dict'):
+        '''
+        wrapper for two methods to populate the data now.
+        :param method: Must be one of ('dict', 'dense')
+        :return:
+        '''
         self._station_locs = {}
         self._station_data = {}
-        bad_stations = []
+
+
+        self.bad_stations = []
+        self.populate_station_locs()
+
+        #Choose which populate subroutine to run.
+        if method=='dict':
+            self.populate_data_dict()
+        elif method=='dense':
+            self.populate_data_dense()
+
+        for bad_station in self.bad_stations:
+            self.stations.remove(bad_station)
+
+    def populate_data_dict(self):
+        self._station_data = {}
         for station in self.stations:
             print(station)
             cache_name = "cached/stationdat_%s_%s_to_%s" % (
@@ -274,33 +490,81 @@ class ScenarioInfo:
                 self.start_date.strftime("%Y-%m-%d"),
                 (self.start_date + self.duration).strftime("%Y-%m-%d")
             )
+            # Check to see if we have cached this thing. If so, recover it from there
             if os.path.exists(cache_name):
-                self.station_data[station] = pickle.load(open(cache_name, "rb"))
-                try:
-                    self.station_locs[station] = get_station_position(station, cache_dir=self.dog.cache_dir)
-                except KeyError:
-                    self.station_locs[station] = numpy.array(extra_station_info[station])
+                self._station_data[station] = pickle.load(open(cache_name, "rb"))
+                # try:
+                #     self.station_locs[station] = get_station_position(station, cache_dir=self.dog.cache_dir)
+                # except KeyError:
+                #     self.station_locs[station] = numpy.array(extra_station_info[station])
                 continue
 
-            self.station_data[station] = {prn: defaultdict(empty_factory) for prn in satellites}
+            # Start populating this dictionary.
+            self._station_data[station] = {prn: defaultdict(empty_factory) for prn in satellites}
             date = self.start_date
             while date < self.start_date + self.duration:
                 try:
-                    loc, data = data_for_station(self.dog, station, date)
-                    self.station_data[station] = station_transform(
+                    # loc, data = data_for_station(self.dog, station, date)
+                    data = data_for_station(self.dog, station, date)
+                    self._station_data[station] = station_transform(
                                                 data,
                                                 start_dict=self.station_data[station],
                                                 offset=int((date - self.start_date).total_seconds()/30)
                                             )
-                    self.station_locs[station] = loc
+                    # self.station_locs[station] = loc
                 except (ValueError, DownloadError):
                     print("*** error with station " + station)
-                    bad_stations.append(station)
+                    self.bad_stations.append(station)
                 date += timedelta(days=1)
             os.makedirs("cached", exist_ok=True)
-            pickle.dump(self.station_data[station], open(cache_name, "wb"))
-        for bad_station in bad_stations:
-            self.stations.remove(bad_station)
+            pickle.dump(self._station_data[station], open(cache_name, "wb"))
+
+    def populate_data_dense(self):
+        '''
+        In this version, the outermost object is a pandas data-frame instead of being a nested-dict.
+        :return:
+        '''
+        self._station_data = {}
+        self.prepare_data_sources('stationdat_dense')
+
+        cors_stns = []; pickle_stns=[]
+        for cs in self.stations:
+            if self.station_data_sources[cs] is None:
+                continue
+            elif self.station_data_sources[cs][0]=='cors_ftp':
+                cors_stns.append(cs)
+            elif self.station_data_sources[cs][0]=='cached_pickle':
+                pickle_stns.append(cs)
+
+        for station in pickle_stns:
+            print(station)
+            if self.station_data_sources[station][0]=='cached_pickle':
+                cache_name=self.station_data_sources[station][1]
+                if os.path.exists(cache_name):
+                    self._station_data[station] = pickle.load(open(cache_name, "rb"))
+
+            # Start populating this dictionary.
+        for station in cors_stns:
+            date = self.start_date
+            data_by_day = []
+            while date < self.start_date + self.duration:
+                print('%s\t%s' % (station, date.strftime("%Y-%m-%d")), end='\r')
+                try:
+                    dfs=data_for_station_npstruct(self.dog, station, date, self.prn_list, self.start_date)
+                    data_by_day.append(dfs)
+                except (ValueError, DownloadError):
+                    print("*** error with station " + station)
+                    self.bad_stations.append(station)
+                date += timedelta(days=1)
+
+            if station not in self.bad_stations:
+                # Combine the data for each of the three days.
+                self._station_data[station]=numpy.vstack(tuple(data_by_day))
+                # save this thing to the cached folder:
+                os.makedirs("cached", exist_ok=True)
+                pickle.dump(self._station_data[station], open(cache_name, "wb"))
+
+
 
     @property
     def clock_biases(self):
