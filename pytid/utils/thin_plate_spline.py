@@ -3,7 +3,7 @@ import numpy as np
 import scipy as sp
 import laika, math
 from laika.lib.coordinates import ecef2geodetic
-from pytid.utils.io import DATETIME_FMT_PRINTABLE, save_to_pickle_file
+# from pytid.utils.io import DATETIME_FMT_PRINTABLE, save_to_pickle_file
 import subprocess, time
 
 C=laika.constants.SPEED_OF_LIGHT
@@ -17,18 +17,18 @@ DEBUG=True
 
 # Kernel_TPS = lambda x,y: np.nan_to_num(np.linalg.norm(y-x)**2*np.log(np.linalg.norm(y-x)),nan=0.)
 # Kernel_TPS = lambda x,y: 0. if np.linalg.norm(y-x)==0. else np.nan_to_num(np.linalg.norm(y-x)**2*np.log(np.linalg.norm(y-x)),nan=0.)
-# DATETIME_FMT_PRINTABLE = '%Y-%m-%d - %H:%M:%S'
+DATETIME_FMT_PRINTABLE = '%Y-%m-%d - %H:%M:%S'
 
 checkpoint_list=[(datetime.datetime.now(), 'Module Loaded')]
 def io_save_to_pickle(dat, file_path):
-    '''Simple wrapper function to save time when saving data as a pickled file.'''
+    '''Simple wrapper function to save time when saving data as a pickled file. Used to save/load TPS object.'''
     import pickle
     tgt_path = os.path.abspath(file_path)
     with open(tgt_path, 'wb') as dat_f:
         pickle.dump(dat, dat_f)
 
 def io_load_from_pickle(file_path):
-    '''Simple wrapper function to save time when loading data as a pickled file.'''
+    '''Simple wrapper function to save time when loading data as a pickled file. Used to save/load TPS object.'''
     import pickle
     tgt_path = os.path.abspath(file_path)
     with open(tgt_path, 'rb') as dat_f:
@@ -400,7 +400,7 @@ class ThinPlateSpline():
             self.prediction_grid_image[img_r, img_c] = self.prediction_grid_values[i]
 
 
-def bias_multi_tps_get_data_for_time(scenario, tval, stns, knot_delays, unknot_delays, prns=GPS_PRNS):
+def bias_multi_tps_get_data_for_time(scenario, base_tick, stns, knot_delays, unknot_delays, prns=GPS_PRNS):
     '''Function to get the data for a thin-plate spline at a single time tick, plus
     the tick following it by "knotdelay". See multiple TPS notes for details.
 
@@ -410,29 +410,55 @@ def bias_multi_tps_get_data_for_time(scenario, tval, stns, knot_delays, unknot_d
     adds that to the result. The values for knotted are separate from un-knotted in the return object.
 
     Returns a dictionary (see bottom of function for specs).'''
-    def get_data_point(scenario, tickpair, tick, z_index):
-        '''helper function to get the information of interest from the station_vtecs file.'''
-        s=tickpair[0]; p=tickpair[1]
-        ecef = scenario.station_vtecs[s][p][0][tick]
-        lat, lon, _ = ecef2geodetic(ecef)
-        vtec=scenario.station_vtecs[s][p][1][tick]
-        slant=scenario.station_vtecs[s][p][2][tick]
-        prn_index = z_index.index(p)
-        stn_index = z_index.index(s)
-        return lat, lon, vtec, slant*DK, prn_index, stn_index
+
+    # **** Helper function depends on data structure ****
+    if scenario.station_data_structure=='dense':
+        def get_data_point(scenario, tickpair, tick, z_index):
+            '''helper function to get the information of interest from the station_vtecs file (in new dense numpy structure).'''
+            s = tickpair[0]; p = tickpair[1];
+            vtec_meas = scenario.get_measure(s, p, tick, vtec=True)
+            ecef = (vtec_meas['ion_loc_x'], vtec_meas['ion_loc_y'], vtec_meas['ion_loc_z'] )
+            vtec = vtec_meas['raw_vtec']; slant = vtec_meas['s_to_v'];
+            lat, lon, _ = ecef2geodetic(ecef)
+            prn_index = z_index.index(p)
+            stn_index = z_index.index(s)
+            return lat, lon, vtec, slant * DK, prn_index, stn_index
+    else:
+        def get_data_point(scenario, tickpair, tick, z_index):
+            '''helper function to get the information of interest from the station_vtecs file (in old dict structure).'''
+            s=tickpair[0]; p=tickpair[1]
+            ecef = scenario.station_vtecs[s][p][0][tick]
+            lat, lon, _ = ecef2geodetic(ecef)
+            vtec=scenario.station_vtecs[s][p][1][tick]
+            slant=scenario.station_vtecs[s][p][2][tick]
+            prn_index = z_index.index(p)
+            stn_index = z_index.index(s)
+            return lat, lon, vtec, slant*DK, prn_index, stn_index
 
     tickpairs = []
     tickpairs_un = []
     z_size = len(prns)+len(stns)
     z_index = prns + stns
-    for s in stns:
-        for p in prns:
-            for d in knot_delays:
-                if len(scenario.station_vtecs[s][p][1])>tval+d and not math.isnan(scenario.station_vtecs[s][p][1][tval+d]):
-                    tickpairs.append((s,p, tval+d))
-            for d in unknot_delays:
-                if len(scenario.station_vtecs[s][p][1])>tval+d and not math.isnan(scenario.station_vtecs[s][p][1][tval+d]):
-                    tickpairs_un.append((s,p, tval+d))
+    if scenario.station_data_structure=='dense':
+        for s in stns:
+            for p in prns:
+                for d in knot_delays:
+                    if scenario.check_sta_prn_tick_exist(s, p, base_tick + d) and \
+                            not np.isnan(scenario.get_measure(s,p,base_tick + d, vtec=True)['raw_vtec']):
+                        tickpairs.append((s, p, base_tick + d))
+                for d in unknot_delays:
+                    if scenario.check_sta_prn_tick_exist(s, p, base_tick + d) and \
+                            not np.isnan(scenario.get_measure(s,p,base_tick + d, vtec=True)['raw_vtec']):
+                        tickpairs_un.append((s, p, base_tick + d))
+    else:
+        for s in stns:
+            for p in prns:
+                for d in knot_delays:
+                    if len(scenario.station_vtecs[s][p][1])>base_tick+d and not math.isnan(scenario.station_vtecs[s][p][1][base_tick + d]):
+                        tickpairs.append((s, p, base_tick + d))
+                for d in unknot_delays:
+                    if len(scenario.station_vtecs[s][p][1])>base_tick+d and not math.isnan(scenario.station_vtecs[s][p][1][base_tick + d]):
+                        tickpairs_un.append((s, p, base_tick + d))
 
     n_knot = len(tickpairs)
     n_unkn = len(tickpairs_un)
@@ -447,13 +473,13 @@ def bias_multi_tps_get_data_for_time(scenario, tval, stns, knot_delays, unknot_d
     Xkn[:,0]=1.; Xun[:,0]=1.0;
 
     for i in range(n_knot):
-        dt = get_data_point(scenario.station_vtecs, tickpairs[i], tickpairs[i][2], z_index)
+        dt = get_data_point(scenario, tickpairs[i], tickpairs[i][2], z_index)
         Xkn[i,1] = dt[1]; Xkn[i, 2] = dt[0];
         Ykn[i,0] = dt[2];
         Zkn[i, dt[4]] = -1.0 * dt[3]
         Zkn[i, dt[5]] = 1.0 * dt[3]
     for i in range(n_unkn):
-        dt = get_data_point(scenario.station_vtecs, tickpairs_un[i], tickpairs_un[i][2], z_index)
+        dt = get_data_point(scenario, tickpairs_un[i], tickpairs_un[i][2], z_index)
         Xun[i,1] = dt[1]; Xun[i, 2] = dt[0];
         Yun[i,0] = dt[2];
         Zun[i, dt[4]] = -1.0 * dt[3]
@@ -479,8 +505,9 @@ def bias_multi_tps_fix_Z_matrix(Z, z_index, prns=GPS_PRNS, verbose=VERBOSE):
     '''Does some fixes to the Z matrix. First removes any all-zero columns. Then Sets the baseline PRN and Rec.
     values, including removing the baseline Rec column (i.e. the last one) and setting the baseline PRN column (i.e.
     the first one) to be an intercept value. Adjusts z_index accordingly.'''
-    # Make sure no faulty columns are included in Z
-    if np.where(np.sum(Z,0)==0.)[0].shape[0]  >0:
+
+    # Make sure no faulty columns are included in Z, remove names from z_index
+    if np.where(np.sum(Z,0)==0.)[0].shape[0]  > 0:
         Z_nullcols = np.where(np.sum(Z,0)==0.)[0]
         Z=np.delete(Z,Z_nullcols,1)
         Z_nullcols_names = list(map(lambda x: z_index[x], tuple(Z_nullcols)))
@@ -489,23 +516,24 @@ def bias_multi_tps_fix_Z_matrix(Z, z_index, prns=GPS_PRNS, verbose=VERBOSE):
         for znm in Z_nullcols_names:
             z_index.remove(znm)
     #
-    # Set stations to make Z matrix full rank (b_sats will sum to 0).
-    all_cors_cols = np.array([i for i in range(len(z_index)) if z_index[i] not in prns])
-    blCORScol = all_cors_cols[-1]; blCORS = z_index[-1];    #Baseline station column (last one)
-    CORScol = all_cors_cols[:-1]
-    n_CORS = CORScol.shape[0]
-    blCORSrws = np.where(Z[:, -1] != 0.)[0]; n_blCORSrws=blCORSrws.shape[0]; #Baseline station rows
-    blCORSvals = Z[blCORSrws, -1]*-1.0
+    # Set stations to make Z matrix full rank (b_sats will sum to 0). Basically we remove the last column of Z and
+    #   subtract it from every other `station` column. This way the betas for the stations sum to 0.
+    stn_cols_init = np.array([i for i in range(len(z_index)) if z_index[i] not in prns]) #indices of station columns
+    base_stn = stn_cols_init[-1]; base_stn_ind = z_index[-1];    #Baseline station column (last one)
+    stn_cols_final = stn_cols_init[:-1]
+    stn_count = stn_cols_final.shape[0]
+    base_stn_rows = np.where(Z[:, -1] != 0.)[0]; base_stn_rows_ct=base_stn_rows.shape[0]; #Baseline station rows
+    base_stn_values = Z[base_stn_rows, -1]*-1.0
     # For each row that is in the baseline category, set every other column in the row equal to -1.0 x (last column)
     #   because the betas sum to 0.
-    Z[np.repeat(blCORSrws, n_CORS), np.tile(CORScol, n_blCORSrws)]=np.repeat(blCORSvals, n_CORS)
+    Z[np.repeat(base_stn_rows, stn_count), np.tile(stn_cols_final, base_stn_rows_ct)]=np.repeat(base_stn_values, stn_count)
     Z = np.delete(Z,-1,1)
-    zpsat = bias_multi_tps_parameters_count_prns(z_index)
-    zprec = len(z_index)-zpsat-1
-    zptot = len(z_index)-1
+    z_prn_count = bias_multi_tps_parameters_count_prns(z_index)
+    z_stn_count = len(z_index)-z_prn_count-1
+    z_size_total = len(z_index)-1
     if verbose:
         print('Z rank %s, Z shape %s' % (np.linalg.matrix_rank(Z), str(Z.shape)))
-    return Z, zpsat, zprec, zptot, blCORS
+    return Z, z_prn_count, z_stn_count, z_size_total, base_stn_ind
 
 def bias_multi_tps_params_to_csv(params_b, z_index, prns=GPS_PRNS, filepath=None, pretty=False):
     zprns = [i for i in z_index if i in prns]
@@ -530,7 +558,7 @@ def bias_multi_tps_params_to_csv(params_b, z_index, prns=GPS_PRNS, filepath=None
 
 def bias_multi_tps_solve(scenario, first_tick=0, knot_tick_gaps=[0, ], no_knot_tick_gaps=[10, ],
                          btw_groups_delay=120*2, lambdasmooth=0.1, num_groups=12, prns=GPS_PRNS,
-                         return_full_model=False, verbose=VERBOSE, use_sparse=True):
+                         stns=None, return_full_model=False, verbose=VERBOSE, use_sparse=True):
     '''
     Gets an estimate of the Sat & Recv biases using a multiple thin-plate spline model. The idea is to take several
     time points from within a few days; close enough that the biases should be the same but far enough apart that the
@@ -606,7 +634,10 @@ def bias_multi_tps_solve(scenario, first_tick=0, knot_tick_gaps=[0, ], no_knot_t
     '''
     v_chkpt=DEBUG
     run_start = datetime.datetime.now()
-    stns = list(scenario.station_vtecs.keys())
+    if stns is None:
+        stns = list(scenario.station_vtecs.keys())
+    else:
+        stns = list(set(stns).intersection(set(scenario.station_vtecs.keys())))
     z_size = len(prns) + len(stns)
     z_index = prns + stns
     info = {'first_tick': first_tick, 'knot_tick_gaps': knot_tick_gaps,  'no_knot_tick_gaps': no_knot_tick_gaps,
@@ -621,7 +652,7 @@ def bias_multi_tps_solve(scenario, first_tick=0, knot_tick_gaps=[0, ], no_knot_t
 
     #****** 1) Get the data for the spline model, one layer at a time
     for i in range(0, num_groups):
-        dd[i]= bias_multi_tps_get_data_for_time(scenario.station_vtecs, i * btw_groups_delay, stns, knot_tick_gaps,
+        dd[i]= bias_multi_tps_get_data_for_time(scenario, i * btw_groups_delay, stns, knot_tick_gaps,
                                                 no_knot_tick_gaps)
         n_knot = dd[i]['n_knot']
         Ki = np.vstack((dd[i]['Kkn'] + n_knot * lambdasmooth * np.identity(n_knot), dd[i]['Kun']))
@@ -753,21 +784,15 @@ def bias_multi_tps_solve(scenario, first_tick=0, knot_tick_gaps=[0, ], no_knot_t
 
     total_time = datetime.datetime.now()-run_start
     info['run_time_sec']=total_time
+
+    # Decide what to return and then exit:
     if return_full_model:
         info.update({
-            'dd': dd, 'Y': Y, 'X': X, 'Xkn': Xkn, 'Z': Z, 'z_index': z_index, 'TP': TP, 'Ktmp': Ktmp,
+            'dd': dd, 'Y': Y, 'X': X, 'Xkn': Xkn, 'Z': Z, 'z_index': z_index, 'TP': TP,
             'LtL_inv': LtL_inv, 'Nall': n_all, 'Nkn': n_kn_all, 'Nun': n_un_all,
             'params_w': params_w, 'params_a': params_a, 'params_b': params_b,
             'num_stations_final': prec, 'N_group_avg': float(n_all/num_groups),
             'Nkn_group_avg': float(n_kn_all/num_groups), 'Nun_group_avg': float(n_un_all/num_groups)
         })
-    else:
-        info.update({
-            'dd': dd, 'z_index': z_index,
-            'Nall': n_all, 'Nkn': n_kn_all, 'Nun': n_un_all,
-            'params_w': params_w, 'params_a': params_a, 'params_b': params_b,
-            'num_stations_final': prec, 'N_group_avg': float(n_all / num_groups),
-            'Nkn_group_avg': float(n_kn_all / num_groups), 'Nun_group_avg': float(n_un_all / num_groups)
-        })
 
-    return params_b, z_index, info
+    return params_b, z_index, info, dict(zip(z_index, params_b[:,0]))

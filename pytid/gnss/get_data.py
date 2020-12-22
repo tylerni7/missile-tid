@@ -8,9 +8,10 @@ import copy
 from datetime import datetime, timedelta
 import io
 import json
-import math
+import math, random
 import numpy
-import pandas as pd
+from multiprocessing import Pool
+# import pandas as pd
 import os
 import pickle
 import requests
@@ -25,9 +26,12 @@ from laika.lib import coordinates
 from laika.rinex_file import RINEXFile, DownloadError
 from laika.dgps import get_station_position
 import laika.raw_gnss as raw
+import laika.astro_dog
 
-from pytid.gnss import tec
-from pytid.utils.configuration import missile_tid_rootfold
+from pytid.gnss import tec, connections
+from pytid.utils.configuration import missile_tid_rootfold, Configuration
+import pytid.utils.thin_plate_spline as TPS
+conf = Configuration()
 
 # one day worth of samples every 30 seconds
 default_len = int(24*60/0.5)
@@ -156,7 +160,7 @@ def download_korean_station(time, station_name, cache_dir):
                 open(filename, "wb").write(station.read(rinex))
     return filename
 
-def data_for_station(dog, station_name, date):
+def data_for_station(dog_cache_dir, station_name, date):
     """
     Get data from a particular station and time. Wraps a number of laika function calls.
     Station names are CORS names (eg: 'slac')
@@ -180,7 +184,7 @@ def data_for_station(dog, station_name, date):
     if network is None:
         try:
             # station_pos = get_station_position(station_name, cache_dir=dog.cache_dir)
-            rinex_obs_file = download_cors_station(time, station_name, cache_dir=dog.cache_dir)
+            rinex_obs_file = download_cors_station(time, station_name, cache_dir=dog_cache_dir, leave_compressed=True)
         except (KeyError, DownloadError):
             pass
 
@@ -188,35 +192,59 @@ def data_for_station(dog, station_name, date):
             # station position not in CORS map, try another thing
             if station_name in extra_station_info:
                 # station_pos = numpy.array(extra_station_info[station_name])
-                rinex_obs_file = download_misc_igs_station(time, station_name, cache_dir=dog.cache_dir)
+                rinex_obs_file = download_misc_igs_station(time, station_name, cache_dir=dog_cache_dir)
             else:
                 raise DownloadError
     else:
         # station_pos = numpy.array(extra_station_info[station_name])
-        rinex_obs_file = handlers[network](time, station_name, cache_dir=dog.cache_dir)
+        rinex_obs_file = handlers[network](time, station_name, cache_dir=dog_cache_dir)
         
     obs_data = RINEXFile(rinex_obs_file, rate=30)
     # return station_pos, raw.read_rinex_obs(obs_data)
     return raw.read_rinex_obs(obs_data)
 
 def meas_to_tuple(ms, stn, tick):
+    '''Converts a laika RawGNSSMeasurement object to a tuple that can be neatly inserted into a structured numpy
+    array.'''
     return (stn, ms.prn, tick,                                                                              #indexes
             ms.observables.get('C1C', math.nan), ms.observables.get('C2C', math.nan),
             ms.observables.get('C2P', math.nan), ms.observables.get('C5C', math.nan),
             ms.observables.get('L1C', math.nan), ms.observables.get('L2C', math.nan),
             ms.observables.get('L5C', math.nan),
-            ms.recv_time_sec, ms.recv_time_week,                                                            #recv_time
-            ms.sat_clock_err,                                                                               #sat_clock_err
-            ms.sat_pos[0].item(), ms.sat_pos[1].item(), ms.sat_pos[2].item(),                               #sat_pos
-            ms.sat_vel[0].item(), ms.sat_vel[1].item(), ms.sat_vel[2].item()                                #sat_vel
+            ms.recv_time_sec, ms.recv_time_week,                                                            # recv_time
+            ms.sat_clock_err,                                                                               # sat_clock_err
+            ms.sat_pos[0].item(), ms.sat_pos[1].item(), ms.sat_pos[2].item(),                               # sat_pos
+            ms.sat_vel[0].item(), ms.sat_vel[1].item(), ms.sat_vel[2].item(),                               # sat_vel
+            ms.sat_pos_final[0].item(), ms.sat_pos_final[1].item(), ms.sat_pos_final[2].item(),             # sat_pos_final
+            1 if ms.corrected else 0, 1 if ms.processed else 0                                              # proc/corr status
             )
 
+def data_for_station_npstruct_wrapper(args):
+    dog_cache_dir = args[0]
+    stn_nm = args[1]
+    date_list = args[2]
+    prns = args[3]
+    t0_date = args[4]
+    date_list.sort()
+    dfs_np = []
 
-def data_for_station_npstruct(dog, station_name, date, prn_list=None, t0_date=None):
+    for d in date_list:
+        try:
+            dfs_day = data_for_station_npstruct(dog_cache_dir, stn_nm, d, prns, t0_date)
+        except:
+            continue
+        dfs_np.append(dfs_day)
+    if len(dfs_np)==0:
+        return None
+    dfs=numpy.vstack(tuple(dfs_np))
+    populate_data_add_satellite_info(dfs, dog_cache_dir)
+    return (stn_nm, dfs)
+
+def data_for_station_npstruct(dog_cache_dir, station_name, date, prn_list=None, t0_date=None):
     '''
     This function will wrap the one above, but instead of returning this cumbersome list-of-lists, it
     will convert it into a structured numpy array.
-    :param dog:             (self-explanatory)
+    :param dog_cache_dir:             (self-explanatory)
     :param station_name:    (self-explanatory)
     :param date:            (self-explanatory, start date for this particular data pull)
     :param prn_list:        a list of specific prns that should be restricted to (e.g. GPS)
@@ -224,11 +252,13 @@ def data_for_station_npstruct(dog, station_name, date, prn_list=None, t0_date=No
 
     :return: a structured numpy array containing the results.
     '''
+    time0 = datetime.now()
     t0 = GPSTime.from_datetime(date) if t0_date is None else GPSTime.from_datetime(t0_date)
     def meas_tick_calc(ms):
         return round((ms.recv_time - t0)/30.0)
 
-    raw_obs = data_for_station(dog, station_name, date)
+    raw_obs = data_for_station(dog_cache_dir, station_name, date)
+    time1 = datetime.now()
 
     # find out how big it needs to be:
     if prn_list is not None:
@@ -241,7 +271,9 @@ def data_for_station_npstruct(dog, station_name, date, prn_list=None, t0_date=No
                    dtype=[('station', 'U4'), ('prn', 'U3'), ('tick', 'i4'), ('C1C', 'f8'), ('C2C', 'f8'), ('C2P', 'f8'),
                           ('C5C', 'f8'), ('L1C', 'f8'), ('L2C', 'f8'), ('L5C', 'f8'), ('recv_time_sec', 'f4'),
                           ('recv_time_week', 'i4'), ('sat_clock_err', 'f8'), ('sat_pos_x', 'f8'), ('sat_pos_y', 'f8'),
-                          ('sat_pos_z', 'f8'), ('sat_vel_x', 'f8'), ('sat_vel_y', 'f8'), ('sat_vel_z', 'f8')])
+                          ('sat_pos_z', 'f8'), ('sat_vel_x', 'f8'), ('sat_vel_y', 'f8'), ('sat_vel_z', 'f8'),
+                          ('sat_pos_final_x', 'f8'), ('sat_pos_final_y', 'f8'), ('sat_pos_final_z', 'f8'),
+                          ('is_processed', 'i1'), ('is_corrected', 'i1')])
     # Populate it one row at a time.
     rw=0
     for i in range(len(raw_obs)):
@@ -252,7 +284,8 @@ def data_for_station_npstruct(dog, station_name, date, prn_list=None, t0_date=No
             if prn_list is None:
                 dfs[rw] = meas_to_tuple(raw_obs[i][j], station_name, meas_tick_calc(raw_obs[i][j]))
                 rw += 1
-
+    time2=datetime.now()
+    times=((time1-time0).seconds+round((time1-time0).microseconds/1000000,2), (time2-time1).seconds+round((time2-time1).microseconds/1000000,2))
     return dfs.reshape((tot_meas_ct,1))
 
 def get_dates_in_range(start_dt, durr):
@@ -264,7 +297,7 @@ def get_dates_in_range(start_dt, durr):
         date_var += timedelta(days=1)
     return dates
 
-def get_cors_station_lists_for_day(dt):
+def cors_get_station_lists_for_day(dt):
     '''For a particular day, pulls a list of CORS stations that have data posted for each of the two CORS sites.
     Technically it just returns a directory listing limited only to items of length 4, but this will do.'''
     # f1 = 'ftp://geodesy.noaa.gov/cors/rinex/'
@@ -285,15 +318,24 @@ def get_cors_station_lists_for_day(dt):
 
 def cors_download_commands(stns, dt_list, out_script='bash_cors_obs_download.sh', cache_dir='~/.gnss_cache'):
     '''
-    :param stns:
-    :param dt_list:
+    This function takes a set of stations and a set of dates and it generates a bash script to download all
+    of the necessary cors_obs files into the correct place in the '.gnss_cache' folder and properly unzip each one.
+    Importantly, it only does this for the stations that are present in the cors_obs ftp sites for the particular
+    day. The bash script is located in the missile-tid/scripts folder.
+
+    When the script is run, it processes the downloads correctly and runs in a fraction of the time of the laika
+    processes. Laika downloads are quite slow, so that is not surprising. Once the files are in the right place,
+    existing processes can recognize that they dont need to be re-downloaded and we can move on with life.
+
+    :param stns:        list of stations to download for
+    :param dt_list:     list of dates on which to donwload it
     :param out_script: name of the file for the bash script. It will natrually be thrown in the 'scripts' folder.
     :param cache_dir: the one from AstroDog
     :return:
     '''
     def get_dt_cors_stns(dt):
         '''Helper function to ID the subset of <stns> that will have CORS files to download.'''
-        cors_stns = get_cors_station_lists_for_day(dt)
+        cors_stns = cors_get_station_lists_for_day(dt)
         my_cors_stns_tup = (set(stns).intersection(list(cors_stns[0])), set(stns).intersection(list(cors_stns[1])))
         my_cors_stns = list(set(my_cors_stns_tup[0]).union(set(my_cors_stns_tup[1])))
         return my_cors_stns
@@ -305,16 +347,19 @@ def cors_download_commands(stns, dt_list, out_script='bash_cors_obs_download.sh'
         cache_dir = os.path.expanduser(cache_dir)
 
     def cors_url_to_bash(stn, tgt_date):
+        '''Changing this to not to the unzip command because we are going to start reading files directly as .gz'''
         filename = stn + tgt_date.strftime("%j0.%yo.gz")
         cors_file_url1 = url_base1 + "/cors/rinex/" + tgt_date.strftime('%Y/%j/') + stn + '/' + filename
         cors_file_url2 = url_base2 + "/cors/rinex/" + tgt_date.strftime('%Y/%j/') + stn + '/' + filename
         dl_target_fold = os.path.join(cache_dir, 'cors_obs', tgt_date.strftime('%Y'), tgt_date.strftime('%j'), stn)
         l1ct = bash_script.write('wget %s -P %s -nc \n' % (cors_file_url1, dl_target_fold))
-        l2ct = bash_script.write('if [ $? -eq 0 ]; then gunzip -c %s > %s ; \n' %
-                                 (os.path.join(dl_target_fold, filename), os.path.join(dl_target_fold, filename)[:-3]))
+        # l2ct = bash_script.write('if [ $? -eq 0 ]; then gunzip -c %s > %s ; \n' %
+        #                          (os.path.join(dl_target_fold, filename), os.path.join(dl_target_fold, filename)[:-3]))
+        l2ct = bash_script.write('if [ $? -eq 0 ]; then echo %s; \n' % os.path.join(dl_target_fold, filename))
         l3ct = bash_script.write('else wget %s -P %s -nc ; \n' % (cors_file_url2 , dl_target_fold))
-        l4ct = bash_script.write('if [ $? -eq 0 ]; then gunzip -c %s > %s   ; fi; fi;\n\n' %
-                                 (os.path.join(dl_target_fold, filename), os.path.join(dl_target_fold, filename)[:-3]))
+        # l4ct = bash_script.write('if [ $? -eq 0 ]; then gunzip -c %s > %s   ; fi; fi;\n\n' %
+        #                          (os.path.join(dl_target_fold, filename), os.path.join(dl_target_fold, filename)[:-3]))
+        l4ct = bash_script.write('if [ $? -eq 0 ]; then echo %s; fi; fi;\n\n' % os.path.join(dl_target_fold, filename))
 
     for my_dt in dt_list:
         date_cors_stns = get_dt_cors_stns(my_dt)
@@ -324,17 +369,42 @@ def cors_download_commands(stns, dt_list, out_script='bash_cors_obs_download.sh'
             cors_url_to_bash(s, my_dt)
     bash_script.close()
 
+def get_ftp_folder_ls(site, folder):
+    '''Pings an FTP folder and lists all the files in it.'''
+    ftp = ftplib.FTP(site, "anonymous","")
+    flist = ftp.nlst(folder)
+    ftp.quit()
+    return flist
+
 def get_igs_station_lists_for_day(dt):
+    '''The idea for this is to write two functions similar to the previous two, but that can
+    handle IGS stations instead of strictly CORS. This will be a bit more involved obviously.
+    NOTE: THIS IS NOT CURRENTLY IMPLEMENTED.'''
+    # TODO: Complete this
     f1=('garner.ucsd.edu' , '/archive/garner/rinex/')
     f2=('data-out.unavco.org','/pub/rinex/obs/')
     f3=('nfs.kasi.re.kr','/gps/data/daily/')
     f4=('igs.gnsswhu.cn','/pub/gps/data/daily/')
     f5=('cddis.nasa.gov','/gnss/data/daily/')
+    Y_str = dt.strftime('%Y')
+    y_str = dt.strftime('%y')
+    j_str = dt.strftime('%j')
+
+    #site 1: UCSD
+    day_folder = f1[1] + dt.strftime('%Y/%j/')
+    # file_list = get_ftp_folder_ls(f1[0],day_folder)
+    myre = re.compile('[0-9a-zA-Z]{4}' + j_str + '0.' + y_str + 'o.Z')
+    # Note: UCSD currently only hosts the high-rate hatanaka rinex files (i.e. '*d.Z' files). Laika currently doesn't
+    #   support those, so the site 1 list is not implemented here.
+
+    #site 2: Unavco
+    day_folder = f2[1] + dt.strftime('%Y/%j/')
+    file_list = get_ftp_folder_ls(f2[0], day_folder)
+    myre = re.compile('[0-9a-zA-Z]{4}' + j_str + '0.' + y_str + 'o.Z')
+
 
     #TODO: Finish implementing this
     pass
-
-
 
 # want to create:
 # receiver -> satellite -> tick -> measurement
@@ -367,15 +437,19 @@ def empty_factory():
     return None
 
 class ScenarioInfo:
+
     def __init__(self, dog, start_date, duration, stations, prn_list = None, data_struct='dict'):
         '''data_struct must be one of ['dict','dense']'''
         self.dog = dog
+        self.dog_cache_dir = dog.cache_dir
         self.start_date = start_date
         self.duration = duration
+        self.date_list = get_dates_in_range(self.start_date, self.duration)
         self.stations = stations
         self._station_locs = None
         self._station_data = None
         self._clock_biases = None
+        self.cache_file_prefix = None
         # Local coordinates for the stations we're using
         # this enables faster elevation lookups
         self.station_converters = dict()
@@ -392,7 +466,7 @@ class ScenarioInfo:
     @property
     def station_data(self):
         if self._station_data is None:
-            self.populate_data(method=self.station_data_structure)
+            self.populate_data()
         return self._station_data
 
     def station_el(self, station, sat_pos):
@@ -430,9 +504,11 @@ class ScenarioInfo:
 
         # First, run through each station to see if we have that pickle file
         pickle_file_ct = 0
+        self.cache_file_prefix = cache_file_prefix
         for stn in self.stations:
-            cache_name = "cached/%s_%s_%s_to_%s" % ( cache_file_prefix, stn,
+            cache_name = "cached/%s_%s_%s_to_%s.p" % ( cache_file_prefix, stn,
                 self.start_date.strftime("%Y-%m-%d"), (self.start_date + self.duration).strftime("%Y-%m-%d"))
+            # print('cache_name: %s, exists=%s' % (cache_name, os.path.exists(cache_name)))
             if os.path.exists(cache_name):
                 self.station_data_sources[stn]=('cached_pickle', cache_name)
                 pickle_file_ct += 1
@@ -440,26 +516,29 @@ class ScenarioInfo:
         # Then pull down the CORS lists for each day:
         cors_lists = dict.fromkeys(range(len(self.date_list)))
         for i in range(len(self.date_list)):
-            cors_lists_d = get_cors_station_lists_for_day(self.date_list[i])
+            cors_lists_d = cors_get_station_lists_for_day(self.date_list[i])
             cors_lists[i] = cors_lists_d
         cors_ftp_ct = 0
         for stn in self.stations:
             if self.station_data_sources[stn] is None:
                 stn_daily_options = []
                 stn_cors_ftp_ok_alldays = True
+                stn_cors_ftp_ok_onedays = False
                 for i in range(len(self.date_list)):
                     in_f1 = stn in cors_lists[i][0]; in_f2 = stn in cors_lists[i][1]
                     if (not in_f1) and (not in_f2):
                         stn_cors_ftp_ok_alldays = False
+                    if in_f1 or in_f2:
+                        stn_cors_ftp_ok_onedays = True
                     stn_daily_options.append((in_f1, in_f2))
-                if stn_cors_ftp_ok_alldays:
+                if stn_cors_ftp_ok_onedays:
                     self.station_data_sources[stn] = ('cors_ftp', stn_daily_options)
                     cors_ftp_ct += 1
 
         print('%s total stns, %s are pickled, %s are on CORS ftp sites.' % (len(self.station_data_sources),
                                                                             pickle_file_ct, cors_ftp_ct))
 
-    def populate_data(self, method='dict'):
+    def populate_data(self):
         '''
         wrapper for two methods to populate the data now.
         :param method: Must be one of ('dict', 'dense')
@@ -468,24 +547,12 @@ class ScenarioInfo:
         self._station_locs = {}
         self._station_data = {}
 
-
         self.bad_stations = []
         self.populate_station_locs()
 
-        #Choose which populate subroutine to run.
-        if method=='dict':
-            self.populate_data_dict()
-        elif method=='dense':
-            self.populate_data_dense()
-
-        for bad_station in self.bad_stations:
-            self.stations.remove(bad_station)
-
-    def populate_data_dict(self):
-        self._station_data = {}
         for station in self.stations:
             print(station)
-            cache_name = "cached/stationdat_%s_%s_to_%s" % (
+            cache_name = "cached/stationdat_%s_%s_to_%s.p" % (
                 station,
                 self.start_date.strftime("%Y-%m-%d"),
                 (self.start_date + self.duration).strftime("%Y-%m-%d")
@@ -493,10 +560,6 @@ class ScenarioInfo:
             # Check to see if we have cached this thing. If so, recover it from there
             if os.path.exists(cache_name):
                 self._station_data[station] = pickle.load(open(cache_name, "rb"))
-                # try:
-                #     self.station_locs[station] = get_station_position(station, cache_dir=self.dog.cache_dir)
-                # except KeyError:
-                #     self.station_locs[station] = numpy.array(extra_station_info[station])
                 continue
 
             # Start populating this dictionary.
@@ -507,10 +570,10 @@ class ScenarioInfo:
                     # loc, data = data_for_station(self.dog, station, date)
                     data = data_for_station(self.dog, station, date)
                     self._station_data[station] = station_transform(
-                                                data,
-                                                start_dict=self.station_data[station],
-                                                offset=int((date - self.start_date).total_seconds()/30)
-                                            )
+                        data,
+                        start_dict=self.station_data[station],
+                        offset=int((date - self.start_date).total_seconds() / 30)
+                    )
                     # self.station_locs[station] = loc
                 except (ValueError, DownloadError):
                     print("*** error with station " + station)
@@ -519,52 +582,46 @@ class ScenarioInfo:
             os.makedirs("cached", exist_ok=True)
             pickle.dump(self._station_data[station], open(cache_name, "wb"))
 
-    def populate_data_dense(self):
-        '''
-        In this version, the outermost object is a pandas data-frame instead of being a nested-dict.
-        :return:
-        '''
-        self._station_data = {}
-        self.prepare_data_sources('stationdat_dense')
+        for bad_station in self.bad_stations:
+            self.stations.remove(bad_station)
 
-        cors_stns = []; pickle_stns=[]
-        for cs in self.stations:
-            if self.station_data_sources[cs] is None:
-                continue
-            elif self.station_data_sources[cs][0]=='cors_ftp':
-                cors_stns.append(cs)
-            elif self.station_data_sources[cs][0]=='cached_pickle':
-                pickle_stns.append(cs)
-
-        for station in pickle_stns:
-            print(station)
-            if self.station_data_sources[station][0]=='cached_pickle':
-                cache_name=self.station_data_sources[station][1]
-                if os.path.exists(cache_name):
-                    self._station_data[station] = pickle.load(open(cache_name, "rb"))
-
-            # Start populating this dictionary.
-        for station in cors_stns:
-            date = self.start_date
-            data_by_day = []
-            while date < self.start_date + self.duration:
-                print('%s\t%s' % (station, date.strftime("%Y-%m-%d")), end='\r')
-                try:
-                    dfs=data_for_station_npstruct(self.dog, station, date, self.prn_list, self.start_date)
-                    data_by_day.append(dfs)
-                except (ValueError, DownloadError):
-                    print("*** error with station " + station)
-                    self.bad_stations.append(station)
-                date += timedelta(days=1)
-
-            if station not in self.bad_stations:
-                # Combine the data for each of the three days.
-                self._station_data[station]=numpy.vstack(tuple(data_by_day))
-                # save this thing to the cached folder:
-                os.makedirs("cached", exist_ok=True)
-                pickle.dump(self._station_data[station], open(cache_name, "wb"))
-
-
+    # def populate_data_dict(self):
+    #     self._station_data = {}
+    #     for station in self.stations:
+    #         print(station)
+    #         cache_name = "cached/stationdat_%s_%s_to_%s.p" % (
+    #             station,
+    #             self.start_date.strftime("%Y-%m-%d"),
+    #             (self.start_date + self.duration).strftime("%Y-%m-%d")
+    #         )
+    #         # Check to see if we have cached this thing. If so, recover it from there
+    #         if os.path.exists(cache_name):
+    #             self._station_data[station] = pickle.load(open(cache_name, "rb"))
+    #             # try:
+    #             #     self.station_locs[station] = get_station_position(station, cache_dir=self.dog.cache_dir)
+    #             # except KeyError:
+    #             #     self.station_locs[station] = numpy.array(extra_station_info[station])
+    #             continue
+    #
+    #         # Start populating this dictionary.
+    #         self._station_data[station] = {prn: defaultdict(empty_factory) for prn in satellites}
+    #         date = self.start_date
+    #         while date < self.start_date + self.duration:
+    #             try:
+    #                 # loc, data = data_for_station(self.dog, station, date)
+    #                 data = data_for_station(self.dog, station, date)
+    #                 self._station_data[station] = station_transform(
+    #                                             data,
+    #                                             start_dict=self.station_data[station],
+    #                                             offset=int((date - self.start_date).total_seconds()/30)
+    #                                         )
+    #                 # self.station_locs[station] = loc
+    #             except (ValueError, DownloadError):
+    #                 print("*** error with station " + station)
+    #                 self.bad_stations.append(station)
+    #             date += timedelta(days=1)
+    #         os.makedirs("cached", exist_ok=True)
+    #         pickle.dump(self._station_data[station], open(cache_name, "wb"))
 
     @property
     def clock_biases(self):
@@ -609,6 +666,455 @@ class ScenarioInfo:
                 if diffs:
                     self._clock_biases[station][tick] = numpy.median(diffs)
 
+    def get_measure(self, sta, prn, tick, **kwargs):
+        '''Once the data is populated, a unified method to get either a laika.GNSSmeasurement object (in the old
+        structure, or a row of the structured numpy array in the dense structure, or a row of the structured vtec
+        numpy array in the dense structure..'''
+
+        if not self.check_sta_prn_tick_exist(sta, prn, tick): # 1) if the tick doesn't exist, return None
+            return None
+        if prn not in self._station_data[sta] or tick not in self._station_data[sta][prn]:
+            return None
+        else:
+            return self._station_data[sta][prn][tick]
+
+    def check_sta_prn_tick_exist(self, sta, prn, tick=None):
+        '''Returns True if there is a tick for the particular prn/station. If tick is omitted, returns true if
+        the PRN exists for the station.'''
+        if tick is None:
+            return prn in self._station_data[sta]
+        else:
+            return prn in self._station_data[sta] and tick in self._station_data[sta][prn]
+
+    def get_tick_list_for_prn(self, sta, prn):
+        '''produces a list of valid ticks for a given station-prn combo.'''
+        return list(self._station_data[sta][prn].keys())
+
+    def get_prn_list_for_station(self, sta):
+        '''returns a list of prns present for a given station.'''
+        return list(self._station_data[sta].keys())
+
+
+class ScenarioInfoDense(ScenarioInfo):
+
+    def __init__(self, dog, start_date, duration, stations, prn_list = None):
+        ScenarioInfo.__init__(self, dog, start_date, duration, stations, prn_list=prn_list, data_struct='dense')
+        self._row_by_prn_tick_index = None
+        self.station_vtecs = None
+        self.conns = None
+        self.conn_map = None
+        self.bias_repo = {}
+
+    def populate_data(self, parallel_proc=True):
+        '''
+        In this version, the outermost object is a pandas data-frame instead of being a nested-dict.
+        :return:
+        '''
+        self._station_locs = {}
+        self._station_data = {}
+
+        self.bad_stations = []
+        self.populate_station_locs()
+        self.prepare_data_sources('stationdat_dense') #'stationdat_dense' is the cache_file_prefix
+
+        cors_stns = []; pickle_stns=[]; none_stns=[];
+        # Make list of pickled data sources versus download list.
+        for cs in self.stations:
+            if self.station_data_sources[cs] is None:
+                none_stns.append(cs)
+                self.bad_stations.append(cs)
+            elif self.station_data_sources[cs][0]=='cors_ftp':
+                cors_stns.append(cs)
+            elif self.station_data_sources[cs][0]=='cached_pickle':
+                pickle_stns.append(cs)
+        print('Station Data Sources: Cached=%s, ftp=%s, None=%s' % (len(pickle_stns), len(cors_stns), len(none_stns)))
+        if len(none_stns)>0:
+            print('   \'None\' stations: %s' % str(none_stns))
+
+        print('Getting pickled files....')
+        for station in pickle_stns:
+            print('  Station: %s (%s of %s) ' % (station, pickle_stns.index(station), len(pickle_stns)), end = '\r')
+            if self.station_data_sources[station][0]=='cached_pickle':
+                cache_name=self.station_data_sources[station][1]
+                if os.path.exists(cache_name):
+                    self._station_data[station] = pickle.load(open(cache_name, "rb"))
+        print(' '*50)
+
+        # Start populating this dictionary.
+        print('Getting files from FTP....')
+        args_list = []
+        numpy.seterr(invalid='ignore')
+        for station in cors_stns:
+            my_dl=[self.date_list[i] for i in range(len(self.date_list)) if (self.station_data_sources[station][1][i][0] or self.station_data_sources[station][1][i][1])]
+            args_list.append((self.dog.cache_dir, station, my_dl, self.prn_list.copy(), self.start_date))
+        # Using Multiprocessing, also adding satellite info while we're at it.
+        args_list_subs = [args_list[i::10] for i in range(10)]
+        total_done = 0; tstart=datetime.now();
+        if parallel_proc:
+            p = Pool(int(os.cpu_count() / 2))
+            for args_list_mini in args_list_subs:
+                if len(args_list_mini)==0:
+                    continue
+                data_read = p.map(data_for_station_npstruct_wrapper, args_list_mini)
+                total_done+= len(data_read)
+                for i in range(len(data_read)):
+                    if data_read[i][1] is not None:
+                        self._station_data[data_read[i][0]]=data_read[i][1]
+                print('%s of %s done (%s elapsed)' % (total_done, len(args_list), datetime.now()-tstart))
+
+                #Pickle them while we're here:
+                for i in range(len(data_read)):
+                    if data_read[i][1] is None:
+                        continue
+                    cache_file_name = "stationdat_dense_%s_%s_to_%s.p" % (data_read[i][0], self.start_date.strftime("%Y-%m-%d"),
+                                                                          (self.start_date + self.duration).strftime(
+                                                                              "%Y-%m-%d"))
+                    cache_path = os.path.join(missile_tid_rootfold, 'cached', cache_file_name)
+                    os.makedirs("cached", exist_ok=True)
+                    with open(cache_path, 'wb') as tempcache:
+                        print('pickling %s' % data_read[i][0], end='\r')
+                        pickle.dump(self._station_data[data_read[i][0]], tempcache)
+            p.close()
+        else:
+            # no multiprocessing:
+            for arg in args_list:
+                one_data_read = data_for_station_npstruct_wrapper(arg)
+                self._station_data[one_data_read[0]]=one_data_read[1]
+                total_done += 1
+                print('%s of %s done (%s elapsed)' % (total_done, len(args_list), datetime.now() - tstart))
+                #pickle it
+                cache_file_name = "stationdat_dense_%s_%s_to_%s.p" % (one_data_read[i][0], self.start_date.strftime("%Y-%m-%d"),
+                                                                      (self.start_date + self.duration).strftime("%Y-%m-%d"))
+                cache_path = os.path.join(missile_tid_rootfold, 'cached', cache_file_name)
+                os.makedirs("cached", exist_ok=True)
+                with open(cache_path, 'wb') as tempcache:
+                    print('pickling %s' % station, '\r')
+                    pickle.dump(self._station_data[station], tempcache)
+
+        # wrap up:
+        print('Finishing data population process...')
+        numpy.seterr(invalid='warn')
+        nones=[k for k in self.station_data.keys() if self._station_data[k] is None]
+        for n in nones:
+            self._station_data.pop(n)
+            self.stations.remove(n)
+        for bad_station in self.bad_stations:
+            self.stations.remove(bad_station)
+        # Make the station-prn-index lookup:
+        self.populate_data_index_row_by_prn_tick()
+
+
+    @property
+    def row_by_prn_tick_index(self):
+        if self._row_by_prn_tick_index is None:
+            self.populate_data_index_row_by_prn_tick()
+        return self._row_by_prn_tick_index
+
+    def populate_data_index_row_by_prn_tick(self):
+        '''Creates a nested dictionary that returns the row of the nparray given a station/PRN/tick combo. Will use
+        a different function to use this to return the measurement directly.'''
+        self._row_by_prn_tick_index = dict.fromkeys(self._station_data.keys())
+        prn_set = set([])
+        # iterate over stations
+        print('Making data prn-tick to row index...')
+        ct = 0
+        for stn in self._row_by_prn_tick_index.keys():
+            ct += 1
+            print('  %s (%s of %s)' % (stn, ct, len(self._station_data.keys())) , end = '\r')
+            prn_list = list(numpy.unique(self._station_data[stn]['prn']))
+            prn_set |= set(prn_list)
+            self._row_by_prn_tick_index[stn] = dict.fromkeys(prn_list)
+            # iterate over satellites
+            for prn in self._row_by_prn_tick_index[stn].keys():
+                prn_rows = numpy.where(self._station_data[stn]['prn']==prn)[0]
+                prn_ticks = self._station_data[stn]['tick'][prn_rows][:,0]
+                self._row_by_prn_tick_index[stn][prn] = dict(zip(prn_ticks, prn_rows))
+        self.prn_list = list(prn_set)
+        self.prn_list.sort()
+        print('  done', end='\r'); print('');
+
+    def populate_data_index_from_pickled(self):
+        '''Gives the option to read the row index from a cached file. Should probably verify it is the right one but
+        that is for later.'''
+        dedicated_row_index_file_loc = os.path.join(conf.missile_tid_root, 'cached', 'conns','row_by_prn_tick_index.p')
+        with open(dedicated_row_index_file_loc, 'rb') as rif:
+            self._row_by_prn_tick_index = pickle.load(rif)
+
+
+    def make_dense_station_vtecs(self):
+        '''Setting up the station_vtecs matrix which is going to correspond to the station_data arrangement'''
+        self.station_vtecs = dict.fromkeys(self.stations)
+        for stn in self.station_vtecs.keys():
+            stn_obs_ct = self._station_data[stn].shape[0]
+            self.station_vtecs[stn] = numpy.empty(stn_obs_ct, dtype=[
+                ('raw_vtec', 'f8'), ('ion_loc_x', 'f8'),('ion_loc_y', 'f8'), ('ion_loc_z', 'f8'),
+                ('s_to_v', 'f8'), ('corr_vtec', 'f8'), ('is_bias_corrected','i1')])
+
+    def gather_connections(self):
+        '''Does the computing of connections. it is designed right now to break up the stations into small groups
+        and save the results along the way in the cached folder. Otherwise this takes way too long to run.
+
+        Method: if there are more than 200 stations, it will cut the stations in to exactly 50 subgroups, each
+        of which gets its own file.'''
+        conns_cache = os.path.join(missile_tid_rootfold, 'cached', 'conns')
+        os.makedirs(conns_cache, exist_ok=True)
+        if len(self.stations) > 200:
+            # Station list broken into exactly 50 groups.
+            station_groups = [self.stations[i::50] for i in range(50)] #50 groups
+        else:
+            station_groups = [self.stations,]
+        self.conns = []
+
+        # As it is 'gathering' the connections for its set of stations, check to
+        #   see if that file has already been done. Read it in if so.
+        for i in range(len(station_groups)):
+            print("Station Group %s, (%s stations)" % (i, len(station_groups[i])))
+            sg = station_groups[i]
+            conns_cache_fn = os.path.join(conns_cache, 'conns_stationgroup_%s.p' % i)
+            if os.path.exists(conns_cache_fn): # Cache exists, read it in.
+                print('opening group %s from pickled file %s' % (i, conns_cache_fn), end='\r')
+                with open(conns_cache_fn, 'rb') as ccf:
+                    cns = pickle.load(ccf)
+            else:   # No such luck, go to the trouble from scratch
+                cns = connections.get_connections(self, station_subset=sg)
+                # One the new group has been calculated, pickle it immediately so it doesn't get lost
+                with open(conns_cache_fn,'wb') as ccf:
+                    pickle.dump(cns, ccf)
+                    print('pickled connection group %s' % i, end = '\r')
+            self.conns += cns
+
+    def adjust_connections(self):
+        '''Creates the conn_map object and computes the ambiguities'''
+        print('Making connections map...', end ='')
+        self.conn_map = connections.make_conn_map(self.conns)
+        print('done.');
+
+        # print('Running ambiguity correction using offset method...', end='')
+        # connections.correct_conns_code(self, self.conns)
+        print('Running ambiguity correction using least squares...', end='')
+        connections.correct_conns(self, self.conns)
+        print('done.')
+
+    def correct_vtec_data_dense(self, bias_dict):
+        '''Runs down the station_vtecs object and puts in the right value for `corrected_vtec`'''
+        # TODO: add something to handle glonass
+        bad_stations = [];
+        # Iterate over stations
+        for stn in self.station_vtecs.keys():
+            if stn not in bias_dict:
+                bad_stations.append(stn)
+                continue
+            else:
+                stn_bias = bias_dict[stn]
+            # Iterate over PRNs with data for that station
+            for prn in self.get_prn_list_for_station(stn):
+                if prn not in bias_dict:
+                    continue
+                else:
+                    # TODO: HANDLE GLONASS HERE
+                    prn_bias = bias_dict[prn]
+                tick_row_lkp = self.row_by_prn_tick_index[stn][prn]
+                # Iterate over rows in of that PRN:
+                for t, r in tick_row_lkp.items():
+                    vt = self.station_vtecs[stn][r]
+                    if not numpy.isnan(vt['raw_vtec']):
+                        self.station_vtecs[stn][r]['corr_vtec'] = tec.correct_tec_vals(vt['raw_vtec'], vt['s_to_v'],
+                                                                                       stn_bias, prn_bias)
+        for station in bad_stations:
+            print("missing bias data for %s: deleting vtecs" % station)
+
+    def check_sta_prn_tick_exist(self, sta, prn, tick=None):
+        '''Returns True if there is a tick for the particular prn/station. If tick is omitted, returns true if
+        the PRN exists for the station.'''
+        if tick is None:
+            return prn in self.row_by_prn_tick_index[sta]
+        else:
+            return prn in self.row_by_prn_tick_index[sta] and tick in self.row_by_prn_tick_index[sta][prn]
+
+    def get_measure(self, sta, prn, tick, row_only=False, vtec=False):
+        '''Once the data is populated, a unified method to get either a laika.GNSSmeasurement object (in the old
+        structure, or a row of the structured numpy array in the dense structure, or a row of the structured vtec
+        numpy array in the dense structure..'''
+
+        if not self.check_sta_prn_tick_exist(sta, prn, tick):
+            # 1) if the tick doesn't exist, return None
+            return None
+        if not row_only and not vtec:
+            # 2) Return the np-measurement
+            return self._station_data[sta][self.row_by_prn_tick_index[sta][prn][tick]]
+        elif row_only:
+            # 3) Return the row index only
+            return self.row_by_prn_tick_index[sta][prn][tick]
+        else:
+            # 4) Return the vtec np-measurement
+            return self.station_vtecs[sta][self.row_by_prn_tick_index[sta][prn][tick]]
+
+    def get_tick_list_for_prn(self, sta, prn):
+        '''produces a list of valid ticks for a given station-prn combo.'''
+        return list(self.row_by_prn_tick_index[sta][prn].keys())
+
+    def get_prn_list_for_station(self, sta):
+        return list(self.row_by_prn_tick_index[sta].keys())
+
+    def get_vtec_data(self, load_from_cache = False):
+        '''Has the option to load it from a pickle. Should add something to verify it is the right stations,
+        dates etc...'''
+        if load_from_cache:
+            cache_station_vtecs = os.path.join(cache_conns_folder, 'station_vtecs_offset.p')
+            if os.path.exists(cache_station_vtecs):
+                with open(cache_station_vtecs, 'rb') as cca:
+                    scenario_test.station_vtecs = pickle.load( cca)
+        elif self.station_vtecs is None:
+            # 1) Creates the empty numpy array with same shape as main observations.
+            self.make_dense_station_vtecs()
+            # 2) Goes through and processes the calculations.
+            get_vtec_data_dense(self, self.conn_map)
+
+    def get_bias_for_day(self, day_index, group_sep_hrs=2, knot_sep_mins=5, max_stations_per_calc=350, rseed=1111):
+        '''
+        For a particular day in the sequence held by the scenario, compute the set of biases for the stations and
+        satellites in the data. If the number of stations exceeds the max, spread it out a bit and record all the
+        results.
+        :param day_index: Which day in the day_list to compute them for
+        :param group_sep_hrs: How many hours apart to take the groups (default 2)
+        :param knot_sep_mins: How many miniutes apart to separate the knots from the un-knots (default 5)
+        :param max_stations_per_calc: Maximum number of stations to involve (to limit data size, limit 300)
+        :return: Eventually adds to the dictionary bias_repo which looks like this:
+            bias_repo = { 'YYYY-MM-DD' : {  'G01' :  { 1: 2.15, 2: ...(bias calcs)...},
+                                            'G02' :  { 1: ....(bias calcs)... },
+                                            ....
+                                            'station1': { <group#> : <bias>},...
+                                        }
+                          'YYYY-MM-D2': { .... }, ....
+                          }
+        '''
+        assert day_index < self.duration.days
+        if not isinstance(day_index, int):
+            day_index = math.floor(day_index)
+        num_groups = math.floor(24.0/group_sep_hrs)
+        group_sep_ticks = group_sep_hrs * 120
+        knot_sep_ticks = knot_sep_mins * 2
+        first_tick = day_index * 2 * 60 * 60 * 24
+
+        # Number of separate bias calcs we'll have to do to get data for all the stations. (Break the list into equal
+        #   parts)
+        station_list = list(self.station_vtecs.keys()); station_list.sort();
+        n_calc_iters = math.ceil(len(station_list)/max_stations_per_calc)
+        stations_per_calc = math.ceil(len(station_list)/n_calc_iters)
+        random.seed(rseed); random.shuffle(station_list);
+        station_subgroups = [station_list[i::n_calc_iters] for i in range(n_calc_iters)]
+
+        day_biases = {k: {} for k in  (self.prn_list+station_list)}
+        for i in range(n_calc_iters):
+            print("Computing biases for day %s, group %s, %s stations, at %s..." %
+                  (day_index, i, len(station_subgroups[i]), datetime.now()), end=''); t1=datetime.now();
+            b,z,info,biases = TPS.bias_multi_tps_solve(self,first_tick, [0,], [knot_sep_ticks,], group_sep_ticks, num_groups=num_groups,
+                                     prns=self.prn_list, stns = station_subgroups[i], use_sparse=False)
+            print("done (%s)" % (datetime.now()-t1))
+            for k,v in biases.items():
+                day_biases[k][i]=v
+
+        self.bias_repo[(self.start_date + timedelta(days=day_index)).strftime('%Y-%m-%d')] = day_biases
+
+    def save_bias_repo(self, clobber=False):
+        '''Method to save the current version of the bias repository.'''
+        if not clobber:
+            myf = open(os.path.join(missile_tid_rootfold, 'data','bias_calc_database.csv'), 'a')
+        else:
+            myf = open(os.path.join(missile_tid_rootfold, 'data','bias_calc_database.csv'), 'w')
+            cct=myf.write('date,stn_prn,group,bias,date_run\n')
+        curr_time = datetime.now()
+        for dt in self.bias_repo.keys():
+            for stnprn in self.bias_repo[dt].keys():
+                grp, bias_calc = self.bias_repo[dt][stnprn]
+                cct=myf.write('%s,%s,%s,%s,%s\n' % (dt, stnprn, grp, bias_calc, curr_time))
+        myf.close()
+
+def populate_data_add_satellite_info(st_mat, cache_dir):
+    '''This step does the equivalent of what the laika .process() command used to do. It has
+    been hard to get this quite right but for the most part it works. If the satellite ephemeris data
+    is unavailable then the is_processed value stays at 0.'''
+    thisdog = laika.astro_dog.AstroDog(cache_dir=cache_dir)
+    st_mat.sort(axis=0, order=['prn','tick'])
+    mat_stn = st_mat[0][0][0]
+    adj_sec = st_mat['recv_time_sec'] - st_mat['C1C'] / constants.SPEED_OF_LIGHT
+    gps_times = list(map(lambda x: GPSTime(week=st_mat['recv_time_week'][x].item(), tow=adj_sec[x].item()),
+                       range(st_mat.shape[0])))
+    for i in range(st_mat.shape[0]):
+        # si = self.dog.get_sat_info(st_mat['prn'][i].item(), gps_times[i]);
+        si = thisdog.get_sat_info(st_mat['prn'][i].item(), gps_times[i]);
+        if si is None:
+            continue
+        st_mat['sat_clock_err'][i] = si[2]
+        st_mat['sat_pos_x'][i] = si[0][0]; st_mat['sat_pos_y'][i] = si[0][1]; st_mat['sat_pos_z'][i] = si[0][2]
+        st_mat['sat_vel_x'][i] = si[1][0]; st_mat['sat_vel_y'][i] = si[1][1]; st_mat['sat_vel_z'][i] = si[1][2]
+        st_mat['is_processed'][i] = 1;
+    del thisdog
+    # print('')
+
+def get_vtec_data_dense(scenario, conn_map=None, biases=None):
+    '''Same as the following function but for dense data structure...
+
+    TODO: Move this function into the ScenarioInfoDense class'''
+    t_start = datetime.now()
+    # Make a helper function to calculate vtec for a station-prn for all ticks:
+    def vtec_for(station, prn, conns=None, biases=None):
+        if biases:
+            station_bias = biases.get(station, 0)
+            sat_bias = biases.get(prn, 0)
+        else:
+            station_bias, sat_bias = 0, 0
+        tick_list = scenario.get_tick_list_for_prn(station, prn)
+
+        for i in tick_list:
+            np_meas = scenario.get_measure(station, prn, i)
+            if conns:
+                # case (1): good connection & good measurement
+                if np_meas and conns[i] and ((conns[i].n1 and conns[i].n2) or conns[i].offset):
+                    res = tec.calc_vtec( scenario, station, prn, i,
+                        n1=conns[i].n1, n2=conns[i].n2, rcvr_bias=station_bias, sat_bias=sat_bias,
+                        offset=conns[i].offset,
+                    )  # --> returns (dat, loc, slant)
+                    if res is None:
+                        # case (2): Good connection but bad measurement for some reason
+                        res_np = (math.nan, None, None, None, math.nan, math.nan, 0)
+                    else:
+                        res_np = (res[0], res[1][0], res[1][1], res[1][2], res[2], math.nan, 0)
+                else:
+                    res_np = (math.nan, None, None, None, math.nan, math.nan, 0)
+            elif np_meas:
+                # case (3): No connection but do have a measurement
+                res = tec.calc_vtec( scenario, station, prn, i )
+                if res is None:
+                    # Computation failed for some reason
+                    res_np = (math.nan, None, None, None, math.nan, math.nan, 0)
+                else:
+                    res_np = (res[0], res[1][0], res[1][1], res[1][2], res[2], math.nan, 0)
+            else:
+                res_np = (math.nan, None, None, None, math.nan, math.nan, 0)
+            #
+            # --> Now update the station_vtecs data in the scenario:
+            data_row = scenario.get_measure(station, prn, i, row_only=True)
+            scenario.station_vtecs[station][data_row] = res_np
+
+    for station in scenario.stations:
+        # print('\r' + ' '*40, end = '\r')
+        print('' % (), end ='')
+        this_prn_list = scenario.get_prn_list_for_station(station)
+        # for prn in satellites:
+        for prn in this_prn_list:
+            print('stn: %s (%s of %s), prn: %s  (%s of %s)...  Elapsed time: %.10s' % (
+                station, scenario.stations.index(station), len(scenario.stations), prn, this_prn_list.index(prn),
+                len(this_prn_list), datetime.now()-t_start), end = '\r')
+            # Use the connection map if we have it, otherwise don't.
+            if conn_map:
+                if station not in conn_map:
+                    break  # no connections... ignore this
+                vtec_for(station, prn, conns=conn_map[station][prn], biases=biases)
+            else:
+                vtec_for(station, prn, biases=biases)
+    print('')
+    return
 
 def get_vtec_data(scenario, conn_map=None, biases=None):
     '''
@@ -623,6 +1129,10 @@ def get_vtec_data(scenario, conn_map=None, biases=None):
     :param biases:
     :return:
     '''
+    if scenario.station_data_structure=='dense':
+        # in dense form it works a bit differently, lines up with the structured nparray created initially.
+        get_vtec_data_dense(scenario, conn_map, biases)
+        return
     station_vtecs = defaultdict(dict)   # The eventual output
     def vtec_for(station, prn, conns=None, biases=None):
         if biases:
@@ -643,7 +1153,8 @@ def get_vtec_data(scenario, conn_map=None, biases=None):
                 measurement = scenario.station_data[station][prn][i]
                 # if conns specified, require ambiguity data
                 if conns:
-                    if measurement and conns[i] and (conns[i].n1 or conns[i].offset): # and numpy.std(conns[i].n1s) < 3:
+                    # if we have a good measurement that's part of a connection and has *a* measure of offset
+                    if measurement and conns[i] and ((conns[i].n1 and conns[i].n2) or conns[i].offset): # and numpy.std(conns[i].n1s) < 3:
                         res = tec.calc_vtec(
                             scenario,
                             station, prn, i,
@@ -652,7 +1163,7 @@ def get_vtec_data(scenario, conn_map=None, biases=None):
                             rcvr_bias=station_bias,
                             sat_bias=sat_bias,
                             offset=conns[i].offset,
-                        )
+                        ) # --> returns (dat, loc, slant)
                         if res is None:
                             locs.append(None)
                             dats.append(math.nan)
@@ -666,7 +1177,7 @@ def get_vtec_data(scenario, conn_map=None, biases=None):
                         dats.append(math.nan)
                         slants.append(math.nan)
 
-                elif measurement:
+                elif measurement: # measurement but not connection
                     res = tec.calc_vtec(scenario, station, prn, i)
                     if res is None:
                         locs.append(None)
@@ -697,6 +1208,9 @@ def get_vtec_data(scenario, conn_map=None, biases=None):
     return station_vtecs
 
 def correct_vtec_data(scenario, vtecs, sat_biases, station_biases):
+    '''Runs through the station_vtecs object and makes the correction using the sat_biases/station_biases values.
+    Returns an object of identical structure but containing the corrected value.'''
+
     corrected = copy.deepcopy(vtecs)
     bad_stations = []
     for station in corrected:
@@ -722,7 +1236,6 @@ def correct_vtec_data(scenario, vtecs, sat_biases, station_biases):
         print("missing bias data for %s: deleting vtecs" % station)
         del corrected[station]
     return corrected
-
 
 # https://stackoverflow.com/questions/12093594/how-to-implement-band-pass-butterworth-filter-with-scipy-signal-butter
 def butter_bandpass(lowcut, highcut, fs, order=2):

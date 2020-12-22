@@ -6,7 +6,7 @@
 import numpy
 import math
 
-from laika import constants, helpers
+from laika import constants, helpers, gps_time
 from laika.lib import coordinates
 
 K = 40.308e16
@@ -26,11 +26,19 @@ F_lookup = {
     'E':(constants.l1, constants.l5, math.nan)
 }
 
+def gps_time_from_dense_record(np_meas):
+    myrecvtime = gps_time.GPSTime(week=np_meas['recv_time_week'][0], tow=np_meas['recv_time_sec'][0])
+    return myrecvtime
+
 def correct_tec(tec_entry, rcvr_bias=0, sat_bias=0):
     # NOTE: the biases now have units of TECu, not meters !
     location, vtecish, s_to_v = tec_entry
     stec = vtecish / s_to_v  + (sat_bias - rcvr_bias)
     return location, stec * s_to_v, s_to_v
+
+def correct_tec_vals(vtecish, s_to_v, rcvr_bias=0., sat_bias=0.):
+    # Same as function 'correct_tec' but with scalar input rather than tuple
+    return (vtecish / s_to_v + (sat_bias - rcvr_bias)) * s_to_v
 
 def calc_vtec(scenario, station, prn, tick, ionh=IONOSPHERE_H, el_cut=0.3, n1=0, n2=0, offset=0, rcvr_bias=0, sat_bias=0):
     """
@@ -46,8 +54,9 @@ def calc_vtec(scenario, station, prn, tick, ionh=IONOSPHERE_H, el_cut=0.3, n1=0,
     If we have receiver or satellite clock biases, those are included.
     Returns: ( VTEC (i.e. STEC * Slant_to_Vertical , Ionosphere-piercing loc , S-to-V factor )
     """
-    measurement = scenario.station_data[station][prn][tick]
-    if measurement is None:
+    datastruct = scenario.station_data_structure
+    meas = scenario.get_measure(station, prn, tick) #generic, will return either data type
+    if meas is None:
         return None
 
     rec_pos = scenario.station_locs[station]
@@ -57,13 +66,25 @@ def calc_vtec(scenario, station, prn, tick, ionh=IONOSPHERE_H, el_cut=0.3, n1=0,
     offset = offset or 0
 
     # Calculate the slant TEC.
-    res = calc_carrier_delay(
-        scenario.dog,
-        measurement,
-        n1=n1, n2=n2, offset=offset,
-        rcvr_bias=rcvr_bias,
-        sat_bias=sat_bias,
-    )
+    if datastruct=='dense':
+        res = calc_carrier_delay_dense(
+            scenario.dog,
+            meas,
+            n1=n1, n2=n2, offset=offset,
+            rcvr_bias=rcvr_bias,
+            sat_bias=sat_bias,
+        ) # --> res = (phase_diff_meters, delay_factor)
+        my_sat_pos = numpy.array([meas['sat_pos_x'][0], meas['sat_pos_y'][0] , meas['sat_pos_z'][0]])
+    else:
+        res = calc_carrier_delay(
+            scenario.dog,
+            meas,
+            n1=n1, n2=n2, offset=offset,
+            rcvr_bias=rcvr_bias,
+            sat_bias=sat_bias,
+        )
+        my_sat_pos = meas.sat_pos
+
     if res is None:
         return None
 
@@ -73,14 +94,15 @@ def calc_vtec(scenario, station, prn, tick, ionh=IONOSPHERE_H, el_cut=0.3, n1=0,
     if math.isnan(stec):
         return None
 
-    if not measurement.processed:
-        measurement.process(scenario.dog)
-    el = scenario.station_el(station, measurement.sat_pos)
+    # -- Commenting the next lines out because data imoprt step does all processing --
+    # if not measurement.processed:
+    #     measurement.process(scenario.dog)
+    el = scenario.station_el(station, my_sat_pos)
     # ignore things too low in the sky
     if el < el_cut or math.isnan(el):
         return None
     s_to_v = s_to_v_factor(el, ionh=ionh)
-    return stec * s_to_v, ion_loc(rec_pos, measurement.sat_pos), s_to_v
+    return stec * s_to_v, ion_loc(rec_pos, my_sat_pos), s_to_v
 
 def s_to_v_factor(el, ionh=IONOSPHERE_H):
     '''
@@ -116,6 +138,28 @@ def ion_loc(rec_pos, sat_pos):
     else:
         return res1
 
+def get_band_freq_for_dense_measurement(dog, np_meas):
+    '''Takes care of some of the boilerplate in the other functions.'''
+    if np_meas is None:
+        return None, None, None
+
+    my_meas_prn = np_meas['prn'][0]
+    band_1 = 'L1C'
+    if my_meas_prn[0] == 'E':
+        band_2 = 'L5C'
+    else:
+        band_2 = 'L2C'
+
+    two_bands = [band_1, band_2]
+    # if my_meas_prn[0] == 'R':
+    my_recv_time = gps_time.GPSTime(week=np_meas['recv_time_week'], tow=np_meas['recv_time_sec'])
+    freqs = [dog.get_frequency(my_meas_prn, my_recv_time, band) for band in two_bands]
+
+    if (math.isnan(np_meas[band_1][0]) or math.isnan(np_meas[band_2][0])):
+        return None, None, None
+    return freqs, two_bands, my_recv_time
+
+
 def calc_carrier_delay(dog, measurement, n1=0, n2=0, offset=0, rcvr_bias=0, sat_bias=0):
     """
     calculates the carrier phase delay associated with a measurement
@@ -146,6 +190,23 @@ def calc_carrier_delay(dog, measurement, n1=0, n2=0, offset=0, rcvr_bias=0, sat_
     )
     return phase_diff_meters + offset + sat_bias - rcvr_bias, delay_factor
 
+def calc_carrier_delay_dense(dog, np_meas, n1=0, n2=0, offset=0, rcvr_bias=0, sat_bias=0):
+    """
+    calculates the carrier phase delay associated with a measurement, given in the numpy
+    structured array format.
+    returns (phase_diff_meters, delay_factor)
+    """
+    freqs, bands, my_recv_time = get_band_freq_for_dense_measurement(dog, np_meas)
+    if freqs is None and bands is None and my_recv_time is None:
+        return None
+    band_1 = bands[0]; band_2 = bands[1];
+
+    delay_factor = freqs[0]**2 * freqs[1]**2/(freqs[0]**2 - freqs[1]**2)
+
+    phase_diff_meters = C * (
+        (np_meas[band_1][0] - n1)/freqs[0] - (np_meas[band_2][0] - n2)/freqs[1]
+    )
+    return phase_diff_meters + offset + sat_bias - rcvr_bias, delay_factor
 
 def melbourne_wubbena(dog, measurement):
     """
@@ -165,6 +226,40 @@ def melbourne_wubbena(dog, measurement):
     pseudorange = 1/(freqs[0] + freqs[1])*(freqs[0]*observable['C1C'] + freqs[1]*observable[chan2])
     wavelength = C/(freqs[0] - freqs[1])
     return phase - pseudorange, wavelength
+
+def melbourne_wubbena_dense(dog, np_meas):
+    """
+    Same as function above but for the measurement in the numpy structured array format.
+    """
+    if np_meas is None:
+        return None
+
+    chan2 = 'C2C' if not numpy.isnan(np_meas['C2C'][0]) else 'C2P'
+    recv_time = gps_time.GPSTime(week=np_meas['recv_time_week'][0], tow=np_meas['recv_time_sec'][0])
+    # freqs = [dog.get_frequency(np_meas['prn'][0], recv_time, band) for band in ['C1C', 'C2C']]
+    freqs = (constants.GPS_L1, constants.GPS_L2) if np_meas['prn'][0][0]=='G' else [dog.get_frequency(np_meas['prn'][0], recv_time, band) for band in ['C1C', 'C2C']]
+    phase = C/(freqs[0] - freqs[1])*(np_meas['L1C'][0] - np_meas['L2C'][0])
+    pseudorange = 1/(freqs[0] + freqs[1])*(freqs[0]*np_meas['C1C'][0] + freqs[1]*np_meas[chan2][0])
+    wavelength = C/(freqs[0] - freqs[1])
+    return phase - pseudorange, wavelength
+
+def melbourne_wubbena_vector(np_meas, ticks, ticks_to_rows, np_chan2_vec=None):
+    '''function to efficiently compute the MW combination over a vector of many ticks. Will only work for GPS right now
+    so may need to be generalized in the future.'''
+    F1=constants.GPS_L1; F2=constants.GPS_L2;
+    assert np_meas['prn'][ticks_to_rows[ticks[0]]][0][0]=='G', "Function only works for GPS right now."
+    if np_chan2_vec is None:
+        np_chan2_vec = numpy.where(numpy.isnan(np_meas['C2C']), np_meas['C2P'], np_meas['C2C'])
+    trows = list(map(lambda x: ticks_to_rows[x], ticks))
+    MWvec = C/(F1-F2)*(np_meas['L1C'][trows,0] - np_meas['L2C'][trows,0]) - \
+            1/(F1+F2)*(F1*np_meas['C1C'][trows,0] + F2*np_chan2_vec[trows,0])
+    return MWvec, np_chan2_vec
+
+def melbourne_wubbena_vector_from_conn(scen, conn):
+    '''Another helper function to make the MW vector directly from the scenario/connection objects.'''
+    F1 = constants.GPS_L1; F2 = constants.GPS_L2;
+    return melbourne_wubbena_vector(scen._station_data[conn.station], conn.ticks,
+                                    scen.row_by_prn_tick_index[conn.station][conn.prn])
 
 def wide_lane(measurement):
     """

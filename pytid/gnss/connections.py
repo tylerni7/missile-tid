@@ -5,22 +5,24 @@ integer ambiguities. Break this out into an easy-to-use class
 from collections import defaultdict
 from laika import helpers
 from laika.lib import coordinates
-import math
+import math, datetime
 import numpy
 
 from pytid.gnss import ambiguity_correct
 from pytid.gnss import get_data
 from pytid.gnss import tec
 
-CYCLE_SLIP_CUTOFF_MW = 10
-CYCLE_SLIP_CUTOFF_DELAY = 0.3
+CYCLE_SLIP_CUTOFF_MW = 5
+CYCLE_SLIP_CUTOFF_DELAY = 1.0
+CYCLE_SLIP_MW_MUSIGMA_FACTOR = 5.0
 MIN_CON_LENGTH = 20  # 10 minutes worth of connection
-DISCON_TIME = 5      # cycle slip for >= 5 samples of no info
+DISCON_TIME = 4      # cycle slip for >= 5 samples of no info
 FULL_CORRECTION = False  # whether to do the full laika "correct" method, largely unnecessary
 EL_CUTOFF = 0.30
 
 
 def contains_needed_info(measurement):
+    '''Make sure that all four observables are valid numerical vals'''
     observable = measurement.observables
     chan2 = 'C2C' if not math.isnan(observable.get('C2C', math.nan)) else 'C2P'
     needed = {'L1C', 'L2C', 'C1C', chan2}
@@ -29,16 +31,31 @@ def contains_needed_info(measurement):
             return False
     return True
 
+def contains_needed_info_dense(np_meas):
+    '''Make sure that all four observables are valid numerical vals'''
+    chan2 = 'C2C' if not numpy.isnan(np_meas['C2C'][0]) else 'C2P'
+    needed = {'L1C', 'L2C', 'C1C', chan2}
+    for need in needed:
+        if numpy.isnan(np_meas[need][0]):
+            return False
+    return True
+
+def is_processed_dense(np_meas):
+    '''Checks to see if any of the last 7 fields are not NaN'''
+    sat_fields = ['sat_clock_err', 'sat_pos_x', 'sat_pos_y', 'sat_pos_z', 'sat_vel_x', 'sat_vel_y', 'sat_vel_z']
+    return not numpy.all(list(map(lambda y: numpy.isnan(np_meas[y])[0], sat_fields)))
 
 class Connection:
     def __init__(self, scenario, station, prn, tick0, tickn, filter_ticks=True):
         self.scenario = scenario
-        self.loc = scenario.station_locs[station]
+        if scenario:
+            self.loc = scenario.station_locs[station]
         self.station = station
         self.prn = prn
-        self.tick0 = tick0
-        self.tickn = tickn
+        self.tick0 = tick0 #at init, first possible tick
+        self.tickn = tickn #at init, largest tick that exists
         self.ticks = None
+        self.break_reason = None
 
         # integer ambiguities... what we really want
         self.n1 = None
@@ -46,17 +63,15 @@ class Connection:
 
         # "raw" offset: the difference from the code phase tec values
         self.offset = None
-
-        # testing, place to hold n_values calculated in various ways
-        self.n12_repo = {}
-
-        self.n1s = []
-        self.n2s = []
         self.werrs = []
 
         # TODO: this could incorporate phase windup as well?
-        if filter_ticks:
-            self.filter_ticks(scenario.station_data[station][prn])
+        if filter_ticks and scenario:
+            if self.scenario.station_data_structure=='dense':
+                prn_rows = numpy.where(scenario.station_data[station]['prn']==prn)[0]
+                self.filter_ticks_dense(scenario.station_data[station][prn_rows])
+            else:
+                self.filter_ticks(scenario.station_data[station][prn])
 
     def filter_ticks(self, this_data):
         '''
@@ -64,8 +79,11 @@ class Connection:
         of ticks (integers) in increasing order. Skips ticks where the satelite elevation was too low. With each tick,
         judges whether the connection has 'dropped' either due to a) DISCONNECTION, or b) CYCLE_SLIP. If it has dropped,
         it stops counting and the connection is considered 'complete' (i.e. initialized).
-        :param this_data:
-        :return:
+
+        The parameter `this_data` can be formatted in one of two ways depending on the data_structure used by the
+        scenario. If the data_structure is 'dense' (i.e., the structured numpy array), then `this_data` should be the
+        sub-array restricted to the PRN-Station combo given at initialization. Otherwise it is the dictionary keyed by
+        ticks.
         '''
         if self.ticks is not None:
             return
@@ -74,50 +92,71 @@ class Connection:
         last_seen = self.tick0
         last_mw = None
         last_tec = None
+
+        tick_to_row = {}
+        if self.scenario.station_data_structure=='dense':
+            tick_to_row = dict(zip(this_data['tick'][:,0], numpy.arange(this_data.shape[0])))
+
         for tick in range(self.tick0, self.tickn):
-            if not this_data[tick]:
-                continue
-
-            if not contains_needed_info(this_data[tick]):
-                continue
-
-            # ignore "bad connections" (low elevation)
-            if not this_data[tick].processed:
-                if not this_data[tick].process(self.scenario.dog):
+            # First check that the tick a) exists, b) has all 4 observables, and c) has the satelite info
+            #   --> have to do this differently depending on the data structure
+            if self.scenario.station_data_structure=='dense':
+                if tick not in tick_to_row:
                     continue
+                tick_r = tick_to_row[tick]
+                if not contains_needed_info_dense(this_data[tick_r]):
+                    continue
+                if not is_processed_dense(this_data[tick_r]):
+                    continue
+                tick_sat_pos = list(map(lambda y: this_data[tick_r][y][0], ['sat_pos_x','sat_pos_y','sat_pos_z']))
+                el = self.scenario.station_el(self.station, tick_sat_pos)
+            else:
+                if not this_data[tick]:
+                    continue
+                if not contains_needed_info(this_data[tick]):
+                    continue
+                if not this_data[tick].processed:
+                    if not this_data[tick].process(self.scenario.dog):
+                        continue
+                # ignore "bad connections" (low elevation)
+                if FULL_CORRECTION and not this_data[tick].corrected:
+                    this_data[tick].correct(self.loc, self.scenario.dog)
+                el = self.scenario.station_el(self.station, this_data[tick].sat_pos)
 
-            if FULL_CORRECTION and not this_data[tick].corrected:
-                this_data[tick].correct(self.loc, self.scenario.dog)
-
-            el = self.scenario.station_el(self.station, this_data[tick].sat_pos)
             if el < EL_CUTOFF:
                 continue
 
-            # detect slips due to long disconnection time
+            # detect slips due to long disconnection time (5 ticks)
             if tick - last_seen > DISCON_TIME:
-#                print("cycle slip: {0}-{1}@{2} exceeded discon time ({3})".format(
-#                    self.station, self.prn, tick, last_seen
-#                ))
+                self.break_reason = 'discon'
                 break
             last_seen = tick
 
-            # detect cycle slips due to changing N_w
-            mw, _ = tec.melbourne_wubbena(self.scenario.dog, this_data[tick])
+            # detect cycle slips due to changing N_w (Cutoff=10 by default)
+            if self.scenario.station_data_structure=='dense':
+                mw, _ = tec.melbourne_wubbena_dense(self.scenario.dog, this_data[tick_r])
+            else:
+                mw, _ = tec.melbourne_wubbena(self.scenario.dog, this_data[tick])
             if last_mw is not None and abs(last_mw - mw) > CYCLE_SLIP_CUTOFF_MW:
                 print("cycle slip: {0}-{1}@{2} mw jump of {3:0.2f}".format(
                     self.station, self.prn, tick, last_mw - mw
                 ))
+                self.break_reason = 'mw'
                 break
             last_mw = mw
-            # OR cycle slips from big changes in TEC
-            delay, _ = tec.calc_carrier_delay(self.scenario.dog, this_data[tick])
+
+            # OR cycle slips from big changes in TEC (diff of 0.3m. This is currently causing mmany of the slips detected)
+            if self.scenario.station_data_structure == 'dense':
+                delay, _ = tec.calc_carrier_delay_dense(self.scenario.dog, this_data[tick_r])
+            else:
+                delay, _ = tec.calc_carrier_delay(self.scenario.dog, this_data[tick])
             if last_tec is not None and abs(last_tec - delay) > CYCLE_SLIP_CUTOFF_DELAY:
                 print("cycle slip: {0}-{1}@{2} delay jump of {3:0.2f}".format(
                     self.station, self.prn, tick, last_tec - delay
                 ))
+                self.break_reason = 'tec_jump'
                 break
             last_tec = delay
-
 
             # all good
             self.ticks.append(tick)
@@ -131,21 +170,94 @@ class Connection:
             self.tick0 = tick
             self.tickn = tick
 
-    def remove_missing_sat_clock_err_ticks(self, scenario):
+    def filter_ticks_dense(self, this_data):
         '''
-        For some ticks in a connection the sat_clock_error might be missing from laika.
-        If that is the case, just boot that tick from the collection.
+        Starts with an assumed 'connection' of length zero at the first time point ('tick'). Runs through the list
+        of ticks (integers) in increasing order. Skips ticks where the satelite elevation was too low. With each tick,
+        judges whether the connection has 'dropped' either due to a) DISCONNECTION, or b) CYCLE_SLIP. If it has dropped,
+        it stops counting and the connection is considered 'complete' (i.e. initialized).
+
+        The parameter `this_data` is assumed to be dense (i.e., the structured numpy array).
         '''
-        tind_offset = 0
-        for tind in range(len(self.ticks)):
-            t=self.ticks[tind-tind_offset]
-            if math.isnan(scenario.station_data[self.station][self.prn][t].sat_clock_err):
-                tout = self.ticks.pop(tind-tind_offset)
-                self.ticks_missing_sat_clock_err.append(tout)
-                tind_offset+=1
-        if len(self.ticks)>0:
+        if self.ticks is not None:
+            return
+
+        self.ticks = []
+        last_seen = self.tick0; last_mw = None; last_tec = None; mw_mean=0.; mw_sigma2=None; mw_ct=0;
+
+        tick_to_row = dict(zip(this_data['tick'][:,0], numpy.arange(this_data.shape[0])))
+
+        for tick in range(self.tick0, self.tickn):
+            # First check that the tick a) exists, b) has all 4 observables, and c) has the satelite info
+            #   --> have to do this differently depending on the data structure
+            print('', end = '\r')
+            print('%s - %s - tick %s (%s to %s): ' % (self.station, self.prn, tick, self.tick0, self.tickn), end ='')
+            if tick not in tick_to_row: #tick doesn't exist
+                continue
+            tick_r = tick_to_row[tick]
+            if not contains_needed_info_dense(this_data[tick_r]): #doesn't have all the data needed
+                continue
+            if not is_processed_dense(this_data[tick_r]): #must have sat_info
+                continue
+            tick_sat_pos = list(map(lambda y: this_data[tick_r][y][0], ['sat_pos_x','sat_pos_y','sat_pos_z']))
+            el = self.scenario.station_el(self.station, tick_sat_pos)
+
+            if el < EL_CUTOFF:
+                continue
+
+            # detect slips due to long disconnection time (5 ticks)
+            if tick - last_seen > DISCON_TIME:
+                self.break_reason = 'discon'
+                break
+            last_seen = tick
+
+            # detect cycle slips due to changing N_w (Cutoff=10 by default)
+            mw, lambda_W = tec.melbourne_wubbena_dense(self.scenario.dog, this_data[tick_r])
+            mw_ct += 1
+            if mw_sigma2 is None:
+                mw_sigma2 = (0.5*lambda_W)**2
+
+            mw_sigma2 = (mw_ct - 1.0) / mw_ct * mw_sigma2 + 1.0 / mw_ct * (mw - mw_mean)**2
+            mw_mean = (mw_ct-1.0)/mw_ct * mw_mean + 1.0/mw_ct * mw
+
+            if mw_ct>6 and abs(mw - mw_mean) > CYCLE_SLIP_MW_MUSIGMA_FACTOR * (mw_sigma2**0.5):
+                print("cycle slip: {0}-{1}@{2} mw mu/sigma ratio of of {3:0.2f}".format(
+                    self.station, self.prn, tick, (mw - mw_mean) / (mw_sigma2**0.5)
+                ), end = '\r')
+                self.break_reason = 'mw_test'
+                break
+
+            # if last_mw is not None and abs(last_mw - mw) > CYCLE_SLIP_CUTOFF_MW:
+            #     print("cycle slip: {0}-{1}@{2} mw jump of {3:0.2f}".format(
+            #         self.station, self.prn, tick, last_mw - mw
+            #     ))
+            #     self.break_reason = 'mw'
+            #     break
+            last_mw = mw
+
+            # OR cycle slips from big changes in TEC (diff of 0.3m. This is currently causing mmany of the slips detected)
+            # *** Note: changed this to 1.0m on 10/15/2020 - MN ***
+            delay, _ = tec.calc_carrier_delay_dense(self.scenario.dog, this_data[tick_r])
+
+            if last_tec is not None and abs(last_tec - delay) > CYCLE_SLIP_CUTOFF_DELAY:
+                print("cycle slip: {0}-{1}@{2} delay jump of {3:0.2f}".format(
+                    self.station, self.prn, tick, last_tec - delay
+                ), end = '\r')
+                self.break_reason = 'tec_jump'
+                break
+            last_tec = delay
+
+            # all good
+            self.ticks.append(tick)
+
+        # Update the local property holding the first and last tick:
+        if self.ticks:
             self.tick0 = self.ticks[0]
             self.tickn = self.ticks[-1]
+        else:
+            self.ticks = [tick]
+            self.tick0 = tick
+            self.tickn = tick
 
     def set_ticks(self, ticks_filtered):
         '''
@@ -232,11 +344,86 @@ class Group:
             f"[{self.ticks[0]}-{self.ticks[-1]}] >"
         )
 
+# from pprint import pprint
+def split_connection(conn, tick_positions, verbose=True):
+    '''The connection object passed in here must be popped off from whatever list or dict
+    it may have been a part of. It will be deleted before this routine is over.'''
+    n_orig_ticks = len(conn.ticks)
+    orig_tick_vector = conn.ticks.copy()
+    new_conn_set = []
+    tick_breaks = [i for i in tick_positions if i>0 and i<n_orig_ticks]
+    tick_breaks.sort()
+    # if verbose:
+    #     pprint(tick_breaks)
+
+    lower_bound_tick = 0
+    # We will move up the list, with each new segment defining a new connection. The very
+    #   last segment remaining will be the modified original connection.
+    for i in range(len(tick_breaks)):
+        putative_upper = tick_breaks[i] #upper bound *does* go inside the interval we are creating.
+        # if verbose:
+        #     print ('lower=%s, put_upper=%s' % (lower_bound_tick, putative_upper))
+        if putative_upper - lower_bound_tick < MIN_CON_LENGTH:
+            #too small, eliminating that interval
+            lower_bound_tick = putative_upper #(here we an hang on to the last upper as the new lower because
+                # it didn't get used for anything)
+            continue
+        newconn = Connection(None, conn.station, conn.prn, tick0=None, tickn=None, filter_ticks=False)
+        newconn.ticks = orig_tick_vector[lower_bound_tick:(putative_upper+1)]
+        newconn.tick0 = min(newconn.ticks)
+        newconn.tickn = max(newconn.ticks)
+        newconn.break_reason = 'melbourne_wubbena_beakpoint'
+        newconn.loc = conn.loc.copy()
+        new_conn_set.append(newconn)
+        lower_bound_tick = putative_upper + 1
+
+    remaning_ticks = orig_tick_vector[lower_bound_tick:]
+    if len(remaning_ticks) >= MIN_CON_LENGTH:
+        lastconn = Connection(None, conn.station, conn.prn, tick0 = None, tickn = None, filter_ticks=False)
+        lastconn.ticks = remaning_ticks
+        lastconn.tick0 = min(lastconn.ticks)
+        lastconn.tickn = max(lastconn.ticks)
+        lastconn.break_reason = conn.break_reason
+        lastconn.loc = conn.loc.copy()
+        new_conn_set.append(lastconn)
+
+    del conn
+    return new_conn_set
+
+
+
+
+
+def make_connections_dense(scenario, station, prn, tick0, tickn):
+    '''A separate version of the make_connections function for the dense structure.'''
+    rows = numpy.where(scenario.station_data[station]['prn']==prn)[0]
+    ticks = scenario.station_data[station]['tick'][rows][:,0]
+    ticks_to_rows = dict(zip(ticks,rows))
+    def next_valid_tick(ticki):
+        return min([i for i in ticks_to_rows.keys() if i>ticki])
+        # return scenario.station_data[station]['tick'][ticks_to_rows[ticki]+1][0]
+
+    ticki = ticks[0]; tickn = ticks[-1];
+    connections = []
+    while ticki < tickn:
+        con = Connection(scenario, station, prn, ticki, tickn)
+        if not con.ticks:
+            ticki = next_valid_tick(ticki)
+            continue
+        elif len(con.ticks) > MIN_CON_LENGTH:
+            con.scenario = None #kill this reference so we can save these and not recompute them every time.
+            connections.append(con)
+
+        ticki = next_valid_tick(con.tickn)
+    return connections
 
 def make_connections(scenario, station, prn, tick0, tickn):
     """
     given data and a bunch of ticks, split it up into connections
     """
+    if scenario.station_data_structure=='dense':
+        return make_connections_dense(scenario, station, prn, tick0, tickn)
+
     def next_valid_tick(tick):
         '''Gets the next integer above `tick` in the dict station_data[station][prn]'''
         for i in range(tick + 1, tickn):
@@ -258,7 +445,7 @@ def make_connections(scenario, station, prn, tick0, tickn):
         ticki = next_valid_tick(con.tickn)
     return connections
 
-def get_connections(scenario, skip=None):
+def get_connections(scenario, skip=None, station_subset=None):
     '''
     For each (station,satelite), grabs the ticks and GNSS measurements (the innermost dict of station_data) and
     runs it through "make_connections()" to get a list of Connection objects.
@@ -266,14 +453,36 @@ def get_connections(scenario, skip=None):
     :param skip: a list of stations that should be skipped.
     :return:
     '''
+    def get_prns(stn):
+        '''Returns a list of the PRNs in the scenario for a given station. If the data strcuture is `dense`
+        then do it using numpy.unique, otherwise the old way.'''
+        if scenario.station_data_structure=='dense':
+            return numpy.unique(scenario.station_data[stn]['prn'])
+        else:
+            return scenario.station_data[station].keys()
+
+    def get_tick_list(stn, prn):
+        '''Returns an iterator over the ticks for which the station-prn combo is active. Sorted list.'''
+        if scenario.station_data_structure=='dense':
+            tks=scenario.station_data[stn]['tick'][numpy.where(scenario.station_data[stn]['prn']==prn)[0]][:,0]
+            return tks
+        else:
+            return scenario.station_data[station][prn].keys()
+
     connections = []
-    for station in scenario.stations:
+    if station_subset is None:
+        station_subset = scenario.stations
+    for station in station_subset:
+        print('\r --station %s (%s of %s): ' % (station, station_subset.index(station), len(station_subset)))
         if skip and station in skip:
             continue
-        for prn in scenario.station_data[station].keys():
-            ticks = scenario.station_data[station][prn].keys()
-            if not ticks:
+        # for prn in scenario.station_data[station].keys():
+        for prn in get_prns(station):
+            # ticks = scenario.station_data[station][prn].keys()
+            ticks = get_tick_list(station, prn)
+            if len(ticks)==0:
                 continue
+            # try:
             connections += make_connections(
                 scenario,
                 station,
@@ -281,6 +490,8 @@ def get_connections(scenario, skip=None):
                 min(ticks),
                 max(ticks)
             )
+            # except:
+            #     print('stn=%s, prn=%s, len(ticks)=%s, tick0=%s, tickn=%s' % (station, prn, len(ticks), min(ticks), max(ticks)))
     return connections
 
 def get_groups(station_data, connections):
@@ -381,9 +592,9 @@ def correct_group(scenario, group):
             diffs.append(abs(members[i].n2 - n2))
         members[i].n1 = n1
         members[i].n2 = n2
-        members[i].n1s.append(n1)
-        members[i].n2s.append(n2)
-        members[i].werrs.append( (res[1][i], res[2], res[3]) )
+        # members[i].n1s.append(n1)
+        # members[i].n2s.append(n2)
+        # members[i].werrs.append( (res[1][i], res[2], res[3]) )
     return bad
 
 def correct_groups(scenario, groups):
@@ -405,14 +616,13 @@ def correct_conns(scenario, conns):
     '''
     Runs the initial least-squares ambiguity correction and gets an initial
     estimate of n1, n2 (adds it to the connection object).
-    :param scenario:
-    :param conns:
-    :return:
     '''
     print("correcting integer ambiguities")
+    t0=datetime.datetime.now()
     for i, conn in enumerate(conns):
         if i % 50 == 0:
-            print("completed %d/%d" % (i, len(conns)), end="\r")
+            print("completed %d/%d in %s" % (i, len(conns), (datetime.datetime(t0.year, t0.month, t0,day, 0,0,0) +
+                                             (datetime.datetime.now() - t0)).strftime('%H:%M:%S')), end="\r")
         # If it already has a decent n1 and n2 value, don't bother:
         if (
             conn.n1 is not None
@@ -421,7 +631,8 @@ def correct_conns(scenario, conns):
             and not math.isnan(conn.n2)
         ):
             continue
-        n1, n2 = ambiguity_correct.solve_ambiguity_lsq(
+        # n1, n2 = ambiguity_correct.solve_ambiguity_lsq(
+        n1, n2 = ambiguity_correct.solve_ambiguity_test_dense(
             scenario,
             conn.station,
             conn.prn,
@@ -429,7 +640,18 @@ def correct_conns(scenario, conns):
         )
         conn.n1 = n1
         conn.n2 = n2
+        conn.offset = 0
 
+def correct_conns_byo_algorithm(scenario, conns, ac_algo):
+    ''' Runs the initial least-squares ambiguity correction and gets an initial
+    estimate of n1, n2 (adds it to the connection object).'''
+    print("correcting integer ambiguities")
+    for i, conn in enumerate(conns):
+        if i % 50 == 0:
+            print("completed %d/%d" % (i, len(conns)), end="\r")
+        n1, n2 = ac_algo( scenario, conn.station, conn.prn, conn.ticks )
+        conn.n1 = n1
+        conn.n2 = n2
 
 def correct_conns_code(scenario, conns):
     '''
@@ -457,7 +679,7 @@ def correct_conns_code(scenario, conns):
             conn.prn,
             conn.ticks
         )
-
+    print(' '*20)
 
 def empty_factory():
     return None
