@@ -24,10 +24,14 @@ class Configuration:
         self.gnss = conf.get("gnss")
         self.logging = conf.get("logging")
         self.plotting = conf.get("plotting")
+        self.laika_cache = self.gnss.get("cache_dir")
+        self.missile_tid_cache = os.path.join(self.laika_cache, 'missile_tid')
+        os.makedirs(self.missile_tid_cache, exist_ok = True)
         self.load_all_stations()
 
     def load_all_stations(self):
-        with open(self.gnss.get("full_station_list"), 'r') as fsl:
+        fullstlist=os.path.join(missile_tid_rootfold,self.gnss.get("full_station_list"))
+        with open(fullstlist, 'r') as fsl:
             self.all_stations = list(map(lambda x: x.strip(), fsl.readlines()))
 
 

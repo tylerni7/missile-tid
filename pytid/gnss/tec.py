@@ -27,6 +27,21 @@ F_lookup = {
 }
 
 def gps_time_from_dense_record(np_meas):
+    '''
+    A little convenience function to get a laika.GPSTime object from the values in one of the GNSS
+    measurements. When we were using the laika.GNSSMeasurement data structure this wouldn't have been
+    necessary, but now that everything is crammed into the structured-numpy array all that is in there
+    is the week & second (in GPS-time), so it's necessary sometimes to turn that back into the laika
+    GPSTime object.
+
+    Parameters
+    ----------
+    np_meas : one row of a numpy structured array, as in the Scenario._station_data object.
+
+    Returns : laika.GPSTime
+    -------
+
+    '''
     myrecvtime = gps_time.GPSTime(week=np_meas['recv_time_week'][0], tow=np_meas['recv_time_sec'][0])
     return myrecvtime
 
@@ -190,12 +205,22 @@ def calc_carrier_delay(dog, measurement, n1=0, n2=0, offset=0, rcvr_bias=0, sat_
     )
     return phase_diff_meters + offset + sat_bias - rcvr_bias, delay_factor
 
-def calc_carrier_delay_dense(dog, np_meas, n1=0, n2=0, offset=0, rcvr_bias=0, sat_bias=0):
+def calc_carrier_delay_dense(dog, np_meas, n1=0., n2=0., offset=0., rcvr_bias=0, sat_bias=0):
     """
     calculates the carrier phase delay associated with a measurement, given in the numpy
     structured array format.
+
+    Note: if both n1/n2 and offset are provided, offset will be IGNORED!
+
     returns (phase_diff_meters, delay_factor)
     """
+    if (n1 != 0. or n2 != 0.) and (offset != 0.):
+        # print('WARNING: both n1/n2 and offset were provided to function `calc_carrier_delay_dense(..)`. Offset will be ignored.')
+        offset = 0.
+    n1 = n1 if n1 is not None else 0.
+    n2 = n2 if n2 is not None else 0.
+    offset = offset if offset is not None else 0.
+
     freqs, bands, my_recv_time = get_band_freq_for_dense_measurement(dog, np_meas)
     if freqs is None and bands is None and my_recv_time is None:
         return None
@@ -207,6 +232,7 @@ def calc_carrier_delay_dense(dog, np_meas, n1=0, n2=0, offset=0, rcvr_bias=0, sa
         (np_meas[band_1][0] - n1)/freqs[0] - (np_meas[band_2][0] - n2)/freqs[1]
     )
     return phase_diff_meters + offset + sat_bias - rcvr_bias, delay_factor
+
 
 def melbourne_wubbena(dog, measurement):
     """
@@ -244,20 +270,53 @@ def melbourne_wubbena_dense(dog, np_meas):
     return phase - pseudorange, wavelength
 
 def melbourne_wubbena_vector(np_meas, ticks, ticks_to_rows, np_chan2_vec=None):
-    '''function to efficiently compute the MW combination over a vector of many ticks. Will only work for GPS right now
-    so may need to be generalized in the future.'''
+    '''
+    function to efficiently compute the Melbourne-Wubbena combination over a vector of many ticks.
+
+    Note: Currently this will only work for GPS, so may need to be generalized in the future.
+
+    Parameters
+    ----------
+    np_meas : np.ndarray
+        Structured numpy array for this station (right from the scenario ._station_data object)
+    ticks : list
+        list of ticks involved in this conneciton object
+    ticks_to_rows : dict
+        dict object that maps a tick to a row of the 'np_meas' matrix
+    np_chan2_vec : None
+        (not implemented)
+
+    Returns : np.ndarray
+        A vector containing the melbourne-wubenna combination of the obserables over these ticks.
+    -------
+
+    '''
     F1=constants.GPS_L1; F2=constants.GPS_L2;
     assert np_meas['prn'][ticks_to_rows[ticks[0]]][0][0]=='G', "Function only works for GPS right now."
+    # Combine 'C2P' with 'C2C' where it is missing:
     if np_chan2_vec is None:
         np_chan2_vec = numpy.where(numpy.isnan(np_meas['C2C']), np_meas['C2P'], np_meas['C2C'])
-    trows = list(map(lambda x: ticks_to_rows[x], ticks))
+    trows = list(map(lambda x: ticks_to_rows[x], ticks)) # row indices matching each tick
     MWvec = C/(F1-F2)*(np_meas['L1C'][trows,0] - np_meas['L2C'][trows,0]) - \
             1/(F1+F2)*(F1*np_meas['C1C'][trows,0] + F2*np_chan2_vec[trows,0])
-    return MWvec, np_chan2_vec
+    return MWvec
 
 def melbourne_wubbena_vector_from_conn(scen, conn):
-    '''Another helper function to make the MW vector directly from the scenario/connection objects.'''
-    F1 = constants.GPS_L1; F2 = constants.GPS_L2;
+    '''
+    Another helper function to make the MW vector directly from the scenario/connection objects.
+
+    Parameters
+    ----------
+    scen : <pytid.get_data.ScenarioInfoDense> object
+        Scenario from which this connection was taken
+    conn : <pytid.connections.Connection> object
+        Connection object
+    Returns : np.ndarray
+        Melbourne-Wubenna vector on observables over the course of the connection
+    -------
+
+    '''
+    # F1 = constants.GPS_L1; F2 = constants.GPS_L2;
     return melbourne_wubbena_vector(scen._station_data[conn.station], conn.ticks,
                                     scen.row_by_prn_tick_index[conn.station][conn.prn])
 

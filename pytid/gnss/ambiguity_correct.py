@@ -2,7 +2,7 @@ from collections.abc import Iterable
 import ctypes
 from itertools import product
 import functools, datetime
-import math
+import math, os
 import numpy
 
 from pytid.gnss import tec
@@ -175,9 +175,11 @@ def lambda_solve(ddn1, ddn2, ws, station_data, sta1, sta2, prn1, prn2, all_ticks
     return ns, ws, 0, 0, 0
 
 def geometry_free_solve(ddn1, ddn2, ws, station_data, sta1, sta2, prn1, prn2, ticks):
-    '''Not currently used. This hasn't been used in a while but Tyler wrote it early on
-    so there may have been something in mind for it. At one point it looks like it was called
-    at the end of the solve_ambiguities() function below, but has een commented out.'''
+    '''DEPRECATED AS OF 2/26/21.
+
+    This hasn't been used in a while but Tyler wrote it early on so there may have been something in mind for it.
+    At one point it looks like it was called at the end of the solve_ambiguities() function below, but has een
+    commented out.'''
     lambda_1 = lambda_1s[prn1[0]]
     lambda_2 = lambda_2s[prn1[0]]
 
@@ -223,69 +225,6 @@ def geometry_free_solve(ddn1, ddn2, ws, station_data, sta1, sta2, prn1, prn2, ti
     return [(n1s[i], n2s[i]) for i in range(4)], ws_ints, 0, 0, 0
 
 
-def solve_ambiguities(station_locs, station_data, sta1, sta2, prn1, prn2, ticks):
-    '''This isn't being used as of 10/16/20, but it did used to be used. It is called by the function
-    correct_group() in the connections module. Also it calls the lambda_solve() method at the bottom,
-    which is another can of worms. But I *think* this is deprecated.'''
-    # initialize wavelengths for this frequency band
-    lambda_1 = lambda_1s[prn1[0]]
-    lambda_2 = lambda_2s[prn1[0]]
-    lambda_n = lambda_ns[prn1[0]]
-    lambda_w = lambda_ws[prn1[0]]
-
-    all_ticks = set(ticks[0]) & set(ticks[1]) & set(ticks[2]) & set(ticks[3])
-
-    def rho_dd(tick):
-        return (
-            rho(station_locs, station_data, sta1, prn1, tick)
-            - rho(station_locs, station_data, sta1, prn2, tick)
-            - rho(station_locs, station_data, sta2, prn1, tick)
-            + rho(station_locs, station_data, sta2, prn2, tick)
-        )
-
-    def dd_phi(tick, chan):
-        return (
-            station_data[sta1][prn1][tick].observables.get(chan, math.nan)
-            - station_data[sta1][prn2][tick].observables.get(chan, math.nan)
-            - station_data[sta2][prn1][tick].observables.get(chan, math.nan)
-            + station_data[sta2][prn2][tick].observables.get(chan, math.nan)
-        )
-
-    ddrho = numpy.array([rho_dd(tick) for tick in all_ticks])
-    ddphi1 = numpy.array([dd_phi(tick, 'L1C') for tick in all_ticks])
-    ddphi2 = numpy.array([dd_phi(tick, 'L2C') for tick in all_ticks])
-
-    ddn1 = round(numpy.mean(ddphi1 - ddrho/lambda_1))
-    ddn2 = round(numpy.mean(ddphi2 - ddrho/lambda_2))
-
-    widelane_dds = []
-
-    for tick in all_ticks:
-        w = widelane_ambiguity(station_data, sta1, sta2, prn1, prn2, tick)
-        if math.isnan(w):
-            continue
-        widelane_dds.append(w)
-
-    widelane_dd = numpy.mean(widelane_dds)
-    #print("wideland double difference: {0:0.3f} +/- {1:0.4f}".format(
-    #    widelane_dd, numpy.std(widelane_dds)
-    #))
-    widelane_dd = round(widelane_dd)
-
-    if abs((ddn1 - ddn2) - widelane_dd) > max(5 * numpy.std(widelane_dds), 3):
-        print("divergence for %s-%s %s-%s @ %d" % (sta1, sta2, prn1, prn2, min(all_ticks)))
-        print("our dd = %d, widelane_dd = %d" % (ddn1 - ddn2, widelane_dd))
-        print("n1,n2,w err %0.2f %0.2f %0.2f\n" % (
-            numpy.std(ddphi1 - ddrho/lambda_1),
-            numpy.std(ddphi2 - ddrho/lambda_2),
-            numpy.std(widelane_dds)
-        ))
-
-    ws, errs, _ = widelane_solve(widelane_dd, station_data, sta1, sta2, prn1, prn2, all_ticks)
-
-    return lambda_solve(ddn1, ddn2, ws, station_data, sta1, sta2, prn1, prn2, all_ticks)
-#    return geometry_free_solve(ddn1, ddn2, ws, station_data, sta1, sta2, prn1, prn2, ticks)
-
 def rho(station_locs, station_data, station, prn, tick):
     '''
     Returns the Euclidean distance in 3d between the satellite and the receiver. If the laika object has
@@ -301,214 +240,6 @@ def rho_factory(scenario, station):
     def my_rho(my_sat_pos):
         return numpy.linalg.norm(recv_pos - my_sat_pos)
     return my_rho
-
-def obs_factory(station_data, station_clock_biases, sta, prn):
-    '''Only works on the old data structure.'''
-    freq_1, freq_2, freq_5 = tec.F_lookup[prn[0]]
-    def obs(tick, chan):
-        res = station_data[sta][prn][tick].observables.get(chan, math.nan)
-        if math.isnan(res) and chan == 'C2C':
-            res = station_data[sta][prn][tick].observables.get('C2P', math.nan)
-        clock_err = getattr(station_data[sta][prn][tick], "sat_clock_err")
-        clock_err += station_clock_biases[sta][tick]
-        if chan[0] == 'C':
-            return res + clock_err * tec.C
-        elif chan == 'L1C':
-            return res + clock_err * freq_1
-        elif chan == 'L2C':
-            return res + clock_err * freq_2
-        elif chan == 'L5C':
-            return res + clock_err * freq_5
-    return obs
-
-def obs_factory_dense(scenario, sta, prn):
-    freq_1, freq_2, freq_5 = tec.F_lookup[prn[0]]
-    tick_to_row_lkp = scenario.row_by_prn_tick_index[sta][prn]
-    def obs(tick):
-        '''
-        Takes a time period and returns a 2-tuple: (numpy.array([ C1C, C2C, C5C, L1C, L2C, L5C], dtype=...),
-                                                    <satelite_position> numpy.array([sat_pos_x, sat_pos_y, sat_pos_z]))
-        Going to return all six to save time'''
-        tick_rec = scenario.station_data[sta][tick_to_row_lkp[tick]][0]
-        # Renders essentially a tuple but with every field callable by name
-        return (numpy.array([(tick_rec['C1C'] + tick_rec['sat_clock_err'] * tec.C,
-                        (tick_rec['C2C'] if not numpy.isnan(tick_rec['C2C']) else tick_rec['C2P']) + tick_rec['sat_clock_err'] * tec.C,
-                         tick_rec['C5C'] + tick_rec['sat_clock_err'] * tec.C,
-                         tick_rec['L1C'] + tick_rec['sat_clock_err'] * freq_1,
-                         tick_rec['L2C'] + tick_rec['sat_clock_err'] * freq_2,
-                         tick_rec['L5C'] + tick_rec['sat_clock_err'] * freq_5,)],
-                       dtype=[('C1C', '<f8'), ('C2C', '<f8'), ('C5C', '<f8'), ('L1C', '<f8'), ('L2C', '<f8'), ('L5C', '<f8')]),
-                 numpy.array([tick_rec['sat_pos_x'], tick_rec['sat_pos_y'], tick_rec['sat_pos_z']]))
-    return obs
-
-def construct_lsq_matrix(
-    distance, obs, freqs, ticks,
-    fix_diff=None, single_param=True
-):
-    """
-    Generic function to make LSQ matrices for solving ambiguities
-
-    distance: function from tick to distance parameter
-    obs: function from tick, channel to observation
-    freqs: the two (or three) frequencies
-    ticks: the ticks for which we should get data
-    fix_diff: optional int tuple. If present it is the (n1-n2, ) value
-        (widelane ambiguity). Or for 3 freq the (n1-n2, n1-n3) values
-        if None, don't assume a fixed difference
-    single_param: if set, use just one A and B value. Otherwise one per tick
-
-    returns: A, y the matrices for lsq stuff.
-    """
-
-    assert 2 <= len(freqs) <= 3, "must specify 2 or 3 frequencies"
-    if fix_diff:
-        assert len(fix_diff) + 1 == len(freqs), "fixed differences have inconsistent length"
-
-    meas_per_tick = 2 * len(freqs)
-    lambdas = [tec.C / f for f in freqs]
-
-    ns_to_find = (len(freqs) if fix_diff is None else 1)
-    param_coef = 0 if single_param else 2
-
-    y = numpy.zeros(meas_per_tick * len(ticks))
-    A = numpy.zeros((
-        meas_per_tick * len(ticks),
-        (
-            ns_to_find  # how many N values to find
-            + 2*(1 if single_param else len(ticks))  # a,b values to find
-        )
-    ))
-
-    for i, tick in enumerate(ticks):
-        # see GNSS hofmann-wellenhof, lichtenegger, wasle eq 5.76 and 7.27
-        rho = distance(tick)
-        y[i*meas_per_tick + 0] = obs(tick, 'L1C') - rho / lambdas[0]
-        y[i*meas_per_tick + 1] = obs(tick, 'L2C') - rho / lambdas[1] + (fix_diff[0] if fix_diff else 0)
-        y[i*meas_per_tick + 2] = obs(tick, 'C1C') / lambdas[0] - rho / lambdas[0]
-        y[i*meas_per_tick + 3] = obs(tick, 'C2C') / lambdas[1] - rho / lambdas[1]
-        if len(freqs) == 3:
-            y[i*meas_per_tick + 4] = obs(tick, 'L5C') - rho / lambdas[2] + (fix_diff[1] if fix_diff else 0)
-            y[i*meas_per_tick + 5] = obs(tick, 'C5C') / lambdas[2] - rho / lambdas[2]
-
-        # x has the format [n1, ?n2, ?n3, (a, b|a_0, b_0, a_1, ... a_n, b_n)]
-        A[i*meas_per_tick + 0][0] = 1
-        A[i*meas_per_tick + 0][ns_to_find + param_coef * i] = freqs[0]
-        A[i*meas_per_tick + 0][ns_to_find + 1 + param_coef * i] = -1/freqs[0]
-
-        A[i*meas_per_tick + 1][1 if fix_diff is None else 0] = 1
-        A[i*meas_per_tick + 1][ns_to_find + param_coef * i] = freqs[1]
-        A[i*meas_per_tick + 1][ns_to_find + 1 + param_coef * i] = -1/freqs[1]
-
-        A[i*meas_per_tick + 2][ns_to_find + param_coef * i] = freqs[0]
-        A[i*meas_per_tick + 2][ns_to_find + 1 + param_coef * i] = 1/freqs[0]
-
-        A[i*meas_per_tick + 3][ns_to_find + param_coef * i] = freqs[1]
-        A[i*meas_per_tick + 3][ns_to_find + 1 + param_coef * i] = 1/freqs[1]
-
-        if len(freqs) == 3:
-            A[i*meas_per_tick + 4][2 if fix_diff is None else 0] = 1
-            A[i*meas_per_tick + 4][ns_to_find + param_coef * i] = freqs[2]
-            A[i*meas_per_tick + 4][ns_to_find + 1 + param_coef * i] = -1/freqs[2]
-
-            A[i*meas_per_tick + 4][ns_to_find + param_coef * i] = freqs[2]
-            A[i*meas_per_tick + 4][ns_to_find + 1 + param_coef * i] = 1/freqs[2]
-
-    return A, y
-
-
-def est_widelane(obs, chans, freqs, ticks):
-    ests = []
-    lambdas = [tec.C / f for f in freqs]
-
-    for tick in ticks:
-        # see GNSS hofmann-wellenhof, lichtenegger, wasle eq 7.31
-        # N_21 = \Phi_21 - (f_1 - f_2)/(f_1 + f_2) * (R_1 + R_2)   <-- Φ in cycles, R in meters
-        #      = (\Phi_1 - \Phi_2) - C/(f_1+f_2) * (R_1/λ_1) +
-        ests.append(
-            (obs(tick, chans[0][0]) - obs(tick, chans[0][1]))
-            - (freqs[0] - freqs[1])/(freqs[0] + freqs[1]) * (
-                obs(tick, chans[1][0])/lambdas[0] + obs(tick, chans[1][1])/lambdas[1]
-            )
-        )
-    return round(numpy.mean(ests))
-
-
-def solve_ambiguity_lsq(scenario, station_clock_biases, sta, prn, ticks):
-    assert prn[0] == 'G', "gps only right now"
-
-    scenario.dog.get_frequency()
-
-    freq_1, freq_2, freq_5 = [
-        scenario.dog.get_frequency(
-            prn,
-            scenario.station_data[sta][prn][ticks[0]].recv_time, band
-        )
-        for band in ["C1C", "C2C", "C5C"]
-    ]
-
-    obs = obs_factory(scenario.station_data, station_clock_biases, sta, prn)
-
-    n21 = est_widelane(obs, (('L1C', 'L2C'), ('C1C', 'C2C')), (freq_1, freq_2), ticks)
-
-    distance_func = functools.partial(rho, scenario.station_locs, station_data, sta, prn)
-
-    if not math.isnan(obs(ticks[0], 'C5C')):
-        use_l5 = True
-        n31 = est_widelane(obs, (('L1C', 'L5C'), ('C1C', 'C5C')), (freq_1, freq_5), ticks)
-    else:
-        use_l5 = False
-
-    A, y = construct_lsq_matrix(
-        distance_func,
-        obs,
-        (freq_1, freq_2, freq_5) if use_l5 else (freq_1, freq_2),
-        ticks,
-        fix_diff=(n21,n31) if use_l5 else (n21,),
-        single_param=True
-    )
-
-    a, _, _, _ = numpy.linalg.lstsq(A, y, rcond=None)
-
-    return round(a[0]), round(a[0]) - n21
-
-def solve_dd_ambiguity_lsq(scenario, group):
-    '''Not currently used. Could possibly be deprecated without a problem.'''
-    assert group.prn1[0] == group.prn2[0], "must use one constellation"
-    freq_1, freq_2 = [
-        scenario.dog.get_frequency(
-            prn,
-            scenario.station_data[group.sta1[0]][group.prn1[0]][ticks[0]].recv_time, band
-        )
-        for band in ["C1C", "C2C"]
-    ]
-
-    def obs(tick, chan):
-        def get_meas_obs(meas):
-            res = meas.observables.get(chan, math.nan)
-            if math.isnan(res) and chan == 'C2C':
-                return meas.observables.get('C2P', math.nan)
-            return res
-        return group.double_difference(get_meas_obs)
-
-    n21 = est_widelane(obs, (('L1C', 'L2C'), ('C1C', 'C2C')), (freq_1, freq_2), group.ticks)
-
-    # distance doesn't matter for double difference
-    distance_func = lambda x:0
-
-    A, y = construct_lsq_matrix(
-        distance_func,
-        obs,
-        (freq_1, freq_2),
-        group.ticks,
-        #fix_diff=(n21,),
-        single_param=True
-    )
-
-    a, _, _, _ = numpy.linalg.lstsq(A, y, rcond=None)
-
-    return round(a[0]), round(a[1]) # - n21
-    pass
-
 
 def offset(scenario, sta, prn, ticks):
     """
@@ -550,6 +281,8 @@ def offset(scenario, sta, prn, ticks):
                 res = scenario.station_data[sta][prn][tick].observables.get('C2P', math.nan)
             return res
 
+    # *** Note that the step where we subtract (sat_clock_err * C) is not needed here because
+    #       it will cancel out in the subtraction ***
     c2 = numpy.array([obs(i, 'C2C') for i in ticks])
     c1 = numpy.array([obs(i, 'C1C') for i in ticks])
     l2 = numpy.array([obs(i, 'L2C') for i in ticks])
@@ -562,9 +295,10 @@ def offset(scenario, sta, prn, ticks):
     avg_diff = numpy.mean(code_phase_diffs - carrier_phase_diffs)
     med_diff = numpy.median(code_phase_diffs - carrier_phase_diffs)
     err = numpy.std(code_phase_diffs - carrier_phase_diffs)
-    return avg_diff, med_diff, err
+    return avg_diff, med_diff, err, numpy.mean(code_phase_diffs), numpy.mean(carrier_phase_diffs)
 
-def solve_ambiguity_test_dense(scenario, sta, prn, ticks, options=None):
+def solve_ambiguity_least_squares_dense(scenario, sta, prn, ticks, variance_matrix_identity=False,
+                                        write_intermediates_to_path=None):
     '''
     This function will calculate the ambiguities N_1 and N_2 for a single connection
     between a satellite and a receiver. It will use raw data (i.e. NOT differenced). This
@@ -585,31 +319,30 @@ def solve_ambiguity_test_dense(scenario, sta, prn, ticks, options=None):
         [TM]  Teunisson, Montenbruck (editors) "Springer Handbook of Global Navigation Satellite
               Systems", Springer 2017.
         Section 23.1, page 662.
+
+    Additional Arguments:
+        variance_matrix_identity:   If True, uses an identity variance matrix rather than attempting
+                                    to differ it for code vs. carrier residuals.
+        write_intermediates_to_path:    If given, should be a string containing a path to a folder that
+                                        the algorithm can dump a bunch of files to.
     '''
-    # timelist = [datetime.datetime.now(),]   #time 0
-
-    if options is None:
-        options = ['fit_by_wls', 'fix_n21']
-
     # initialize wavelengths for this frequency band
     F1, F2, F5 = tec.F_lookup[prn[0]]
     C = tec.C
     lam1 = C/F1; lam2 = C/F2; lam5 = C/F5;
 
-    # my_rho = rho_factory(scenario, sta)
-    # obs = obs_factory_dense(scenario, sta, prn)
-    # timelist.append(datetime.datetime.now())  #time 1 (initialize)
-
     # Gather \rho, \phi and R_j values
     tick_rows = numpy.array(list(map(lambda x: scenario.row_by_prn_tick_index[sta][prn][x], ticks)))
     n_obs = tick_rows.shape[0]
     sat_errs = scenario.station_data[sta]['sat_clock_err'][tick_rows]
-    phi1_t = scenario.station_data[sta]['L1C'][tick_rows] + sat_errs * F1
-    phi2_t = scenario.station_data[sta]['L2C'][tick_rows] + sat_errs * F2
-    R1_t = scenario.station_data[sta]['C1C'][tick_rows] + sat_errs * C
+
+    # TODO: Figure out what the deal was with the sat_clock_err in the laika correct() method...
+    phi1_t = scenario.station_data[sta]['L1C'][tick_rows]
+    phi2_t = scenario.station_data[sta]['L2C'][tick_rows]
+    R1_t = scenario.station_data[sta]['C1C'][tick_rows] #+ sat_errs * C
     R2_t = numpy.where(numpy.logical_not(numpy.isnan(scenario.station_data[sta]['C2C'][tick_rows])),
                        scenario.station_data[sta]['C2C'][tick_rows],
-                       scenario.station_data[sta]['C2P'][tick_rows]) + sat_errs * C
+                       scenario.station_data[sta]['C2P'][tick_rows]) #+ sat_errs * C
 
     # Compute Distances to Satellite: (\rho vector)
     rec_pos = scenario.station_locs[sta]
@@ -618,6 +351,7 @@ def solve_ambiguity_test_dense(scenario, sta, prn, ticks, options=None):
                                  scenario.station_data[sta]['sat_pos_z'][tick_rows]))
     rho_t = numpy.linalg.norm(rec_pos - sat_pos_mat, axis=1).reshape((n_obs,1))
 
+    # *** Older version for the nested-dict station_data structure ***
     # obs_t =  numpy.array([obs(tick) for tick in ticks])   #obs here spits out a tuple for each t
     # rho_t =  numpy.array([ my_rho(x[1]) for x in obs_t]).reshape((obs_t.shape[0], 1))
     # phi1_t = numpy.array([ob[0]['L1C'] for ob in obs_t]) #in cycles
@@ -625,13 +359,18 @@ def solve_ambiguity_test_dense(scenario, sta, prn, ticks, options=None):
     # R1_t  =  numpy.array([ob[0]['C1C'] for ob in obs_t]) #in meters
     # R2_t  =  numpy.array([ob[0]['C2C'] for ob in obs_t]) #obs here has taken care of making this 'C2P' if needed
     # n_obs = phi1_t.shape[0]
-    # print('obs_t: %s; rho_t: %s, phi1_t: %s, phi2_t: %s, R1_t: %s, R2_t: %s, n_obs=%s' % (str(obs_t.shape), str(rho_t.shape),
-    #                                           str(phi1_t.shape), str(phi2_t.shape), str(R1_t.shape), str(R2_t.shape), n_obs))
 
     # N_21 = N_1 - N_2, approximating it with the widelane
     n21_t_widelane = (phi1_t - phi2_t) - (F1-F2)/(F1+F2)*(R1_t/lam1 + R2_t/lam2)
     n21est = numpy.mean(n21_t_widelane)
-    # timelist.append(datetime.datetime.now())  # time 2 (data pull)
+
+    # Note the variables used earlier...
+    singletons = []; names = [];
+    if write_intermediates_to_path is not None and os.path.isdir(write_intermediates_to_path):
+        singletons = ['n_obs', 'n21est', ]
+        names = ['tick_rows', 'sat_errs', 'phi1_t', 'phi2_t', 'R1_t', 'R2_t', 'rec_pos', 'sat_pos_mat', 'rho_t',
+                 'n21_t_widelane']
+        # Add the rest down below...
 
     # Set up the equations like eq. 6.134 (p. 161) of the Springer text "GPS: ..." but
     #   the distance ρ has been subtracted from the left side.
@@ -665,46 +404,80 @@ def solve_ambiguity_test_dense(scenario, sta, prn, ticks, options=None):
     # y_2 = (phi1_t - rho_t / lam1); print('y_2: %s' % str(y_2.shape))
     # y_3 = (phi2_t - rho_t / lam2); print('y_3: %s' % str(y_3.shape))
 
-    if 'fix_n21' in options:
-        y[2::4] = y[2::4] - n21est
+    # Adjust by N_21:
+    y[2::4] = y[2::4] - n21est
 
     # Xmat is the integer *and* float parts (four columns) of the regression design matrix
     #   - y=A*a + B*b ([TM] eq. 23.2) --> X = [ A   B ]
-    Xmat = numpy.zeros((4 * n_obs, 4), dtype=numpy.float64)
+    Xmat = numpy.zeros((4 * n_obs, 3), dtype=numpy.float64)
     # A[2::4,0] = 1 <-- from the first version of the matrix as above.
-    Xmat[:,0] = 1 #Adding an intercept term.
-    Xmat[3::4,1] = 1; Xmat[2::4,1] = 1;
+    # Xmat[:,0] = 1 #Adding an intercept term. <--*no intercept so it will be full-rank*
+    Xmat[3::4,0] = 1; Xmat[2::4,0] = 1;
 
     # Next two cols of X is the float part.
-    # B = numpy.zeros((4 * n_obs, 2), dtype=numpy.float64)
     freq_vec1 = numpy.array([F1, F2, F1, F2], dtype=numpy.float64)
     freq_vec = numpy.array([1 / F1, 1 / F2, -1 / F1, -1 / F2], dtype=numpy.float64)
-    Xmat[:, 2] = numpy.tile(freq_vec, n_obs)
-    Xmat[:, 3] = numpy.tile(freq_vec1, n_obs)
-    # timelist.append(datetime.datetime.now())  # time 3 (design matrix)
+    Xmat[:, 1] = numpy.tile(freq_vec, n_obs)
+    Xmat[:, 2] = numpy.tile(freq_vec1, n_obs)
 
     # Was doing some futzing with the variance matrix, though IIRC it didn't make a different
-    sigma_C = 0.01  # Carrier-Phase stddev
-    sigma_P = 1.0   # Pseudorange stddev
+    if variance_matrix_identity:
+        sigma_C = 1.0  # Carrier-Phase stddev
+        sigma_P = 1.0   # Pseudorange stddev
+    else:
+        sigma_C = 0.01  # Carrier-Phase stddev
+        sigma_P = 1.0  # Pseudorange stddev
 
     # Inverse Variance Matrix:
-    Wyy = numpy.diag(numpy.hstack((numpy.ones(n_obs * 2, dtype=numpy.float64) * 1. / sigma_P ** 2,
-                                   numpy.ones(n_obs * 2, dtype=numpy.float64) * 1. / sigma_C ** 2)))
-    # comp_time_list = []
-    # comp_time_list.append(datetime.datetime.now()) # cpu t=0
+    Wyy = numpy.diag(numpy.tile(numpy.array([1. / sigma_P ** 2, 1. / sigma_P ** 2, 1. / sigma_C ** 2, 1. / sigma_C ** 2]),
+                                n_obs))
+    # *** Note (8/20/21): This was incorrect. Y is arranged as [ y_R1, y_R2, y_phi1, y_phi2 ]_{i}^T stacked vertically,
+    #   but this makes it the top half is for R1/R2 and the bottom half is phi1/phi2:
+    # Wyy = numpy.diag(numpy.hstack((numpy.ones(n_obs * 2, dtype=numpy.float64) * 1. / sigma_P ** 2,
+    #                                numpy.ones(n_obs * 2, dtype=numpy.float64) * 1. / sigma_C ** 2)))
 
-    # comp_time_list.append(datetime.datetime.now())  # cpu t=1
+    # B = [X' Wyy X]^{-1} [X' Wyy Y]
+    beta = numpy.linalg.inv(Xmat.T.dot(Wyy.dot(Xmat))).dot( Xmat.T.dot(Wyy.dot(y)) )
+    N2_hat = beta[0]
+    N1_hat = beta[0] + n21est
 
-    if 'fit_by_wls' in options:
-        # comp_time_list.append(datetime.datetime.now())  # cpu t=2
-        beta = numpy.linalg.inv(Xmat.T.dot(Wyy.dot(Xmat))).dot( Xmat.T.dot(Wyy.dot(y)) )
-        # comp_time_list.append(datetime.datetime.now())  # cpu t=3
-        N2_hat = beta[1]
-        N1_hat = beta[1] + n21est
-        # timelist.append(datetime.datetime.now())  # time 4 (final)
-        # return round(N1_hat.item()), round(N2_hat.item()), timelist, comp_time_list
-        return round(N1_hat.item()), round(N2_hat.item())
+    if write_intermediates_to_path is not None and os.path.isdir(write_intermediates_to_path):
+        singletons += ['n_obs', 'n21est', 'sigma_C', 'sigma_P', 'N2_hat', 'N1_hat']
+        names += ['y', 'Xmat', 'Wyy', 'beta']
+        npargs = tuple([eval(i) for i in names])
+        dump_numpy_arrays_to_folder(write_intermediates_to_path, names, *npargs)
+        singleton_dict = {k: eval(k) for k in singletons}
+        with open(os.path.join(write_intermediates_to_path, 'singletons.json'),'w') as sjs:
+            json.dump(singleton_dict, sjs)
+        del names, npargs, singletons, singleton_dict
 
+    return round(N1_hat.item()), round(N2_hat.item()), n21est, N2_hat.item()
+
+def dump_numpy_arrays_to_folder(fold, name_list, *args):
+    '''debugging method to accept a folder as the first argument, a list of variable names
+    as the second argument, and then an arbitrary number of numpy arrays after. Dumps all
+    of them to individual files in the folder. '''
+    if len(name_list)!=len(*args):
+        print("Note, %s names given and %s numpy args..." % (len(name_list), len(*args)))
+        n_dumps = min(len(name_list), len(*args))
+    if not os.path.isdir(fold):
+        print("%s is not a valid folder, exiting.")
+        return
+
+    for i in range(n_dumps):
+        pa = os.path.join(fold, name_list[i]+'.tsv')
+        if not isinstance(*args[i], numpy.ndarray):
+            print("np array argument %d is not a valid numpy array, it is a %s" % (i, str(type(*args[i]))))
+            continue
+        numpy.savetxt(pa, *args[i], delimiter='\t')
+        print("Saved %s..." % name_list[i])
+
+    return
+
+
+#
+# Old code saved:
+#
 
     # ...What follows is the LAMBDA half-integer, half-float solution:
     # Go ahead and solve the float version ([TM] eq. 23.8)
@@ -718,3 +491,5 @@ def solve_ambiguity_test_dense(scenario, sta, prn, ticks, options=None):
     # b_hat_numerator = numpy.dot(numpy.dot(B.T, QyyInv), (y-numpy.dot(A, a_hat)))
     # b_hat = numpy.dot(BtQB_inv, b_hat_numerator)
     # return round(a_hat[0,0]), round(a_hat[1,0])
+
+

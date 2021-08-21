@@ -1,7 +1,9 @@
 import glob
-import os
+import os, pickle
 from pytid.utils.configuration import Configuration
 
+
+DATETIME_FMT_PRINTABLE = '%Y-%m-%d - %H:%M:%S'
 conf = Configuration()
 workfold = conf.gnss.get("working_dir")
 os.makedirs(os.path.join(workfold,'saved_data'), exist_ok=True)
@@ -20,54 +22,14 @@ def find_shared_objects(prefix: str) -> str:
         raise ImportError(f"I found too many shared objects with prefix={prefix}. Found files: {found_paths}")
     return found_paths[0]
 
-def load_data_from_dedicated_folder(filename, override_folder = False):
-    if not override_folder:
-        tgt_path = os.path.join(workfold, 'saved_data', filename)
-    else:
-        tgt_path = os.path.abspath(filename)
-    with open(tgt_path, 'rb') as dat_f:
+def load_data_from_pickle_file(file_path):
+    with open(file_path, 'rb') as dat_f:
         dat = pickle.load(dat_f)
     return dat
 
-def save_data_to_dedicated_folder(dat, filename, override_folder = False):
-    if not override_folder:
-        tgt_path = os.path.join(workfold, 'saved_data', filename)
-    else:
-        tgt_path = os.path.abspath(filename)
-    with open(tgt_path, 'wb') as dat_f:
+def save_data_to_pickle_file(dat, file_path):
+    with open(file_path, 'wb') as dat_f:
         pickle.dump(dat, dat_f)
-
-def load_conns(fn = 'conns.p'):
-    print('loading connection data from %s' % (os.path.join(workfold, 'saved_data', fn)))
-    with open(os.path.join(workfold, 'saved_data', fn), 'rb') as conns_f:
-        cns = pickle.load(conns_f)
-    return cns
-
-def save_conns(new_conns, fn = 'conns.p'):
-    print('saving connection data to %s' % (os.path.join(workfold, 'saved_data', fn)))
-    for c in new_conns:
-        c.dog = None
-    with open(os.path.join(workfold, 'saved_data', fn), 'wb') as conns_f:
-        pickle.dump(new_conns, conns_f)
-
-def load_station_vtecs(fn = 'station_vtecs.p'):
-    print('loading station_vtecs data from %s' % (os.path.join(saved_data_fold, 'station_vtecs_repo', fn)))
-    with open(os.path.join(saved_data_fold, 'station_vtecs_repo', fn), 'rb') as stat_vtecs_f:
-        station_vtecs = pickle.load(stat_vtecs_f)
-    return station_vtecs
-
-def save_station_vtecs(station_vtecs, fn = 'station_vtecs.p'):
-    print('saving station_vtecs data to %s' % (os.path.join(saved_data_fold, 'station_vtecs_repo', fn)))
-    os.makedirs(os.path.join(saved_data_fold, 'station_vtecs_repo'), exist_ok=True)
-    with open(os.path.join(saved_data_fold, 'station_vtecs_repo', fn), 'wb') as stat_vtecs_f:
-        pickle.dump(station_vtecs, stat_vtecs_f)
-
-def save_biasdata_holder(bdh, fn = 'my_BiasDataHolder.p'):
-    print('saving Bias data holder to %s' % (os.path.join(workfold, 'saved_data', 'bias_calc_reporting', fn)))
-    os.makedirs(os.path.join(saved_data_fold, 'bias_calc_reporting'), exist_ok=True)
-    bdh.save_folder = os.path.join(saved_data_fold, 'bias_calc_reporting')
-    with open(os.path.join(saved_data_fold, 'bias_calc_reporting', fn), 'wb') as bdh_f:
-        pickle.dump(bdh, bdh_f)
 
 def get_list_from_file(filepath):
     '''

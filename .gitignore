@@ -46,6 +46,7 @@ config/configuration.yml
 # Build directorys
 build
 cached
+scripts
 
 # Default plotting dir
 plots

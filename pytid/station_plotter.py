@@ -12,14 +12,14 @@ dog = AstroDog(cache_dir=conf.gnss.get("cache_dir"))
 _LOG = logging.getLogger(__name__)
 
 def collect_and_plot(start_date: datetime, duration: timedelta, logger: logging.Logger = _LOG):
-    conns, station_data, station_locs, stations = get_station_connection_data(duration, start_date, logger)
+    conns, scenario = get_station_connection_data(duration, start_date, logger)
 
     # attempt to solve integer ambiguities
     logger.info("Solving ambiguities")
-    connections.correct_conns_code(station_locs, station_data, conns)
+    connections.correct_conns_code(scenario, conns)
 
     corrected_vtecs, sat_biases, rcvr_biases, tecs, cal_dat, station_vtecs, conn_map = \
-        post_ambiguity_computation(conns, station_data, station_locs, logger=logger)
+        post_ambiguity_computation(conns, scenario, logger=logger)
 
     plot_stations(corrected_vtecs, start_date, stations, logger)
 
@@ -31,7 +31,7 @@ def plot_stations(corrected_vtecs, start_date, stations, logger = _LOG, suffix =
         plotter.plot_station(station)
 
 
-def post_ambiguity_computation(conns, station_data, station_locs, logger = _LOG):
+def post_ambiguity_computation(conns, scenario, logger = _LOG):
     '''
     This function runs all the computations for plotting that come *after* the ambiguity resolution step.
     :param conns:
@@ -46,7 +46,7 @@ def post_ambiguity_computation(conns, station_data, station_locs, logger = _LOG)
 
     # this will get vtec data, accounting for ambiguities but NOT clock biases
     logger.info("Calculating vTEC data")
-    station_vtecs = get_data.get_vtec_data(dog, station_locs, station_data, conn_map=conn_map)
+    station_vtecs = get_data.get_vtec_data(scenario, conn_map=conn_map)
 
     # this attempts to find coincidences of satellites and station observations
     # from which to derive biases

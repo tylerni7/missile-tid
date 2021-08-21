@@ -556,6 +556,8 @@ def bias_multi_tps_params_to_csv(params_b, z_index, prns=GPS_PRNS, filepath=None
             cct = myf.write('\n'.join(lns))
     return
 
+
+
 def bias_multi_tps_solve(scenario, first_tick=0, knot_tick_gaps=[0, ], no_knot_tick_gaps=[10, ],
                          btw_groups_delay=120*2, lambdasmooth=0.1, num_groups=12, prns=GPS_PRNS,
                          stns=None, return_full_model=False, verbose=VERBOSE, use_sparse=True):
@@ -598,7 +600,7 @@ def bias_multi_tps_solve(scenario, first_tick=0, knot_tick_gaps=[0, ], no_knot_t
             difference in running time but the memory footprint is about half with the sparse, so that is the default.
         5) Finish up, separate the parameter vector into its components. Populate some model metadata for the output.
 
-    :param station_vtecs:
+    :param scenario:
     :param first_tick:      (int) Tick for the first time-point in the series.
     :param knot_tick_gaps:  (list of int) A list of gaps from the first tick point for each layer for which to add
                                 knotted points. Really this should just be [0,], but if for some reason you want to ahve
@@ -614,6 +616,10 @@ def bias_multi_tps_solve(scenario, first_tick=0, knot_tick_gaps=[0, ], no_knot_t
     :param lambdasmooth:    (float) Smoothing parameter for the thin-plate spline (default is 0.1)
     :param num_groups:      (int) Number of time points to use. Specific ticks to mark each time point will be chosen
                             based on the math of (first_tick + (i)*btw_groups_delay , i = 1, ..., num_groups).
+    :param prns:            (list of PRNs) If given only computes biases with this subset of PRNs
+    :param stns:            (list of Stations) If given only computes biases with this subset of Stations
+    :param return_full_model:
+    :param verbose:
     :param use_sparse:      (boolean) If True, computations are done using a parsimonious approach to memory,
                                 specifically using scipy sparse arrays in one particular case to avoid an explosion of
                                 memory usage at the expense of longer computing time. For 24 layers, 483 stations, 1
@@ -704,6 +710,8 @@ def bias_multi_tps_solve(scenario, first_tick=0, knot_tick_gaps=[0, ], no_knot_t
     # ****** 4) Do the computations to solve for the bias parameters. We have a sparse and dense version:
     if not use_sparse:
         # ***** Dense Version *****
+        #       - Faster but much more memory heavy
+        #       - Not to be confused with the "Dense" data structure
         Ktmp = sp.linalg.block_diag(*tuple(map(lambda x: dd[x]['K'], range(num_groups))))
         A_inv = sp.linalg.block_diag(*tuple(map(lambda x: dd[x]['Ainv'], range(num_groups))))
         B = Ktmp.T.dot(np.hstack((X, Z)))
@@ -738,6 +746,7 @@ def bias_multi_tps_solve(scenario, first_tick=0, knot_tick_gaps=[0, ], no_knot_t
         params = LtL_inv.dot(Lt_Y)
     else:
         # ***** Sparse Version *****
+        #   - Slightly slower but not as memory heavy...
         Ktmp = sp.linalg.block_diag(*tuple(map(lambda x: dd[x]['K'], range(num_groups)))); #checkpoint('Made ktmp (721) %s' % get_nparray_size_data(Ktmp,True),v_chkpt)
         A_inv = sp.linalg.block_diag(*tuple(map(lambda x: dd[x]['Ainv'], range(num_groups)))); #checkpoint('Made A_inv (722) %s' % get_nparray_size_data(A_inv,True),v_chkpt)
         B = Ktmp.T.dot(np.hstack((X, Z))); #checkpoint('Made B (723)',v_chkpt)
