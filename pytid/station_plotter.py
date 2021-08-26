@@ -4,7 +4,7 @@ from laika import AstroDog
 import logging
 
 from pytid.utils.configuration import Configuration
-from pytid.gnss import bias_solve, connections, get_data, plot
+from pytid.gnss import bias_solve, connections, get_data
 
 conf = Configuration()
 
@@ -77,7 +77,7 @@ def get_station_connection_data(duration, start_date, logger = _LOG):
     # ask Laika for station location data + GNSS data from our stations
     logger.info("Gathering GNSS data from stations...")
 
-    scenario = get_data.ScenarioInfo(dog, start_date, duration, stations)
+    scenario = get_data.ScenarioInfo(dog, start_date, duration, stations, data_struct='dense')
     # turn our station data into "connections" which are periods of
     # signal lock without cycle slips
     logger.info("Reorganizing data into connections")

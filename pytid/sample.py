@@ -78,7 +78,7 @@ start_date = datetime.strptime("2020-03-23", "%Y-%m-%d")
 
 duration = timedelta(days=1)
 # make a "scenario"
-scenario = get_data.ScenarioInfo(dog, start_date, duration, stations,data_struct='dense')
+scenario = get_data.ScenarioInfo(dog, start_date, duration, stations, data_struct='dense')
 
 # turn our station data into "connections" which are periods of
 # signal lock without cycle slips

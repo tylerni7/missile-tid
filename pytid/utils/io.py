@@ -6,8 +6,8 @@ from pytid.utils.configuration import Configuration
 DATETIME_FMT_PRINTABLE = '%Y-%m-%d - %H:%M:%S'
 conf = Configuration()
 workfold = conf.gnss.get("working_dir")
-os.makedirs(os.path.join(workfold,'saved_data'), exist_ok=True)
-saved_data_fold = os.path.join(workfold,'saved_data')
+os.makedirs(os.path.join(workfold, 'saved_data'), exist_ok=True)
+saved_data_fold = os.path.join(workfold, 'saved_data')
 
 def find_shared_objects(prefix: str) -> str:
     """

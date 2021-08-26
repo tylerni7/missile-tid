@@ -6,7 +6,6 @@ import math
 from matplotlib import animation
 from matplotlib import cm
 import matplotlib.pyplot as plt
-from mpl_toolkits.basemap import Basemap
 import numpy
 import os
 from scipy.signal import butter, lfilter, filtfilt, sosfiltfilt
@@ -18,8 +17,8 @@ import get_data
 
 dog = AstroDog(cache_dir=os.environ['HOME'] + "/.gnss_cache/")
 
-print("initializing coords...")
-globe = Basemap(projection='mill',lon_0=180)
+#print("initializing coords...")
+#globe = Basemap(projection='mill',lon_0=180)
 
 print("loading data...")
 stations = [
@@ -86,8 +85,8 @@ for i in range(2880):
             vals.append( (vtec, connection_name, len(connections[connection_name])) )
             connections[connection_name].append(vtec)
 
-    xs, ys = globe(lons, lats)
-    ticks.append( (xs, ys, vals) )
+    #xs, ys = globe(lons, lats)
+    ticks.append( (lats, lons, vals) )
 
 epsilon = 0.4
 min_tec = numpy.quantile([x for x in all_values if not math.isnan(x)], 0.5 - epsilon)

@@ -20,7 +20,7 @@ import zipfile
 import ftplib, urllib, re
 
 from laika import constants
-from laika.downloader import download_cors_station, download_file
+from laika.downloader import download_cors_station, download_file, download_and_cache_file
 from laika.gps_time import GPSTime
 from laika.lib import coordinates
 from laika.rinex_file import RINEXFile, DownloadError
@@ -103,7 +103,7 @@ def download_misc_igs_station(time, station_name, cache_dir):
         'ftp://data-out.unavco.org/pub/rinex/obs/',
     )
     try:
-        filepath = download_file(url_bases, folder_path, cache_subdir, filename, compression='.Z')
+        filepath = download_and_cache_file(url_bases, folder_path, cache_subdir, filename, compression='.Z')
         return filepath
     except IOError:
         url_bases = (
@@ -113,7 +113,7 @@ def download_misc_igs_station(time, station_name, cache_dir):
         )
         folder_path += t.strftime("%yo/")
         try:
-            filepath = download_file(url_bases, folder_path, cache_subdir, filename, compression='.Z')
+            filepath = download_and_cache_file(url_bases, folder_path, cache_subdir, filename, compression='.Z')
             return filepath
         except IOError:
             return None
@@ -161,7 +161,7 @@ def download_korean_station(time, station_name, cache_dir):
                 open(filename, "wb").write(station.read(rinex))
     return filename
 
-def data_for_station(dog_cache_dir, station_name, date):
+def data_for_station(dog, station_name, date):
     """
     Get data from a particular station and time. Wraps a number of laika function calls.
     Station names are CORS names (eg: 'slac')
@@ -185,7 +185,7 @@ def data_for_station(dog_cache_dir, station_name, date):
     if network is None:
         try:
             # station_pos = get_station_position(station_name, cache_dir=dog.cache_dir)
-            rinex_obs_file = download_cors_station(time, station_name, cache_dir=dog_cache_dir, leave_compressed=True)
+            rinex_obs_file = download_cors_station(time, station_name, cache_dir=dog.cache_dir)
         except (KeyError, DownloadError):
             pass
 
@@ -193,12 +193,12 @@ def data_for_station(dog_cache_dir, station_name, date):
             # station position not in CORS map, try another thing
             if station_name in extra_station_info:
                 # station_pos = numpy.array(extra_station_info[station_name])
-                rinex_obs_file = download_misc_igs_station(time, station_name, cache_dir=dog_cache_dir)
+                rinex_obs_file = download_misc_igs_station(time, station_name, cache_dir=dog.cache_dir)
             else:
                 raise DownloadError
     else:
         # station_pos = numpy.array(extra_station_info[station_name])
-        rinex_obs_file = handlers[network](time, station_name, cache_dir=dog_cache_dir)
+        rinex_obs_file = handlers[network](time, station_name, cache_dir=dog.cache_dir)
         
     obs_data = RINEXFile(rinex_obs_file, rate=30)
     # return station_pos, raw.read_rinex_obs(obs_data)
@@ -253,7 +253,7 @@ def data_for_station_npstruct_wrapper(args):
     populate_data_add_satellite_info(dfs, dog_cache_dir)
     return (stn_nm, dfs)
 
-def data_for_station_npstruct(dog_cache_dir, station_name, date, prn_list=None, t0_date=None):
+def data_for_station_npstruct(dog, station_name, date, prn_list=None, t0_date=None):
     '''
     This function will wrap the one above, but instead of returning this cumbersome list-of-lists, it
     will convert it into a structured numpy array.
@@ -270,7 +270,7 @@ def data_for_station_npstruct(dog_cache_dir, station_name, date, prn_list=None, 
     def meas_tick_calc(ms):
         return round((ms.recv_time - t0)/30.0)
 
-    raw_obs = data_for_station(dog_cache_dir, station_name, date)
+    raw_obs = data_for_station(dog.cache_dir, station_name, date)
     time1 = datetime.now()
 
     # find out how big it needs to be:

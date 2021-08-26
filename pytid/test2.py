@@ -7,14 +7,13 @@ import math
 from matplotlib import animation
 from matplotlib import cm
 import matplotlib.pyplot as plt
-from mpl_toolkits.basemap import Basemap
 import numpy
 import os
 from scipy.signal import butter, lfilter, filtfilt, sosfiltfilt
 
 
-import tec
-import get_data
+from gnss import tec
+from gnss import get_data
 
 
 dog = AstroDog(cache_dir=os.environ['HOME'] + "/.gnss_cache/")
