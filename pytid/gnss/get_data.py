@@ -12,7 +12,7 @@ import math, random
 import numpy
 from multiprocessing import Pool
 # import pandas as pd
-import os
+import os, glob
 import pickle
 import requests
 from scipy.signal import butter, filtfilt
@@ -185,7 +185,7 @@ def data_for_station(dog_cache_dir, station_name, date):
     if network is None:
         try:
             # station_pos = get_station_position(station_name, cache_dir=dog.cache_dir)
-            rinex_obs_file = download_cors_station(time, station_name, cache_dir=dog_cache_dir, leave_compressed=True)
+            rinex_obs_file = download_cors_station(time, station_name, cache_dir=dog_cache_dir)
         except (KeyError, DownloadError):
             pass
 
@@ -203,6 +203,12 @@ def data_for_station(dog_cache_dir, station_name, date):
     obs_data = RINEXFile(rinex_obs_file, rate=30)
     # return station_pos, raw.read_rinex_obs(obs_data)
     return raw.read_rinex_obs(obs_data)
+
+def data_from_rinex_file(filepath):
+    '''Skips the laika downloading interactions and just reads the rinex file directly'''
+    obs_data = RINEXFile(filepath, rate=30)
+    return raw.read_rinex_obs(obs_data)
+
 
 def meas_to_tuple(ms, stn, tick):
     '''Converts a laika RawGNSSMeasurement object to a tuple that can be neatly inserted into a structured numpy
@@ -239,21 +245,26 @@ def data_for_station_npstruct_wrapper(args):
     prns = args[3]
     t0_date = args[4]
     date_list.sort()
+    file_list = cors_get_station_rinex_filepaths_from_laika_cache(stn_nm, date_list)
     dfs_np = []
 
-    for d in date_list:
+    for i in range(len(date_list)):
+        d = date_list[i]; f=file_list[i];
         try:
-            dfs_day = data_for_station_npstruct(dog_cache_dir, stn_nm, d, prns, t0_date)
+            if f is None:
+                dfs_day = data_for_station_npstruct(dog_cache_dir, stn_nm, d, prns, t0_date)
+            else:
+                dfs_day = data_for_station_npstruct(dog_cache_dir, stn_nm, d, prns, t0_date, f)
         except:
             continue
         dfs_np.append(dfs_day)
     if len(dfs_np)==0:
-        return None
+        return (stn_nm, None)
     dfs=numpy.vstack(tuple(dfs_np))
-    populate_data_add_satellite_info(dfs, dog_cache_dir)
+    # populate_data_add_satellite_info(dfs, dog_cache_dir)
     return (stn_nm, dfs)
 
-def data_for_station_npstruct(dog_cache_dir, station_name, date, prn_list=None, t0_date=None):
+def data_for_station_npstruct(dog_cache_dir, station_name, date, prn_list=None, t0_date=None, rinex_file_path=None):
     '''
     This function will wrap the one above, but instead of returning this cumbersome list-of-lists, it
     will convert it into a structured numpy array.
@@ -270,7 +281,11 @@ def data_for_station_npstruct(dog_cache_dir, station_name, date, prn_list=None, 
     def meas_tick_calc(ms):
         return round((ms.recv_time - t0)/30.0)
 
-    raw_obs = data_for_station(dog_cache_dir, station_name, date)
+    if rinex_file_path is None:
+        raw_obs = data_for_station(dog_cache_dir, station_name, date)
+    else:
+        assert os.path.isfile(rinex_file_path)
+        raw_obs = data_from_rinex_file(rinex_file_path)
     time1 = datetime.now()
 
     # find out how big it needs to be:
@@ -329,6 +344,27 @@ def cors_get_station_lists_for_day(dt):
 
     return stn_list, stn_list
 
+def cors_get_station_lists_for_day_from_laika_cache(dt):
+    '''For a given day, pulls a list of CORS stations where a valid, non-hatanaka compressed, gzipped RINEX
+    file is present in the laika cache subfolder.'''
+    day_dir = os.path.join(conf.laika_cache, 'cors_obs', dt.strftime('%Y'), dt.strftime('%j'))
+    flist = glob.glob(os.path.join(day_dir,'*','*o.gz')) + glob.glob(os.path.join(day_dir,'*','*o'))
+    stnlist = list(map(lambda x: os.path.split(os.path.split(x)[0])[1], flist))
+    return stnlist
+
+def cors_get_station_rinex_filepaths_from_laika_cache(stn, dt_list):
+    '''Takes a station and a list of dates and returns a list of rinex file paths that exist in the laika cache'''
+    file_list = []
+    for dt in dt_list:
+        fn = stn + dt.strftime('%j0.%yo')
+        day_dir = os.path.join(conf.laika_cache, 'cors_obs', dt.strftime('%Y'), dt.strftime('%j'), stn )
+        if os.path.isfile(os.path.join(day_dir, fn + '.gz')):
+            file_list.append(os.path.join(day_dir, fn + '.gz'))
+        elif os.path.isfile(os.path.join(day_dir, fn)):
+            file_list.append(os.path.join(day_dir, fn))
+        else:
+            file_list.append(None)
+    return file_list
 
 # def cors_get_station_lists_for_day_OLD(dt):
 #     '''DEPRECATED: NOAA HAS SHIFTED TO HTTP...sigh
@@ -350,10 +386,10 @@ def cors_get_station_lists_for_day(dt):
 #     f2sta = list(filter(lambda x: len(x) == 4, list(map(lambda x: x.replace(day_folder, ''), f2nlst))))
 #     return f1sta, f2sta
 
-def cors_download_commands(stns, dt_list, out_script='bash_cors_obs_download.sh', cache_dir='~/.gnss_cache'):
+def cors_download_commands_script(stns, dt_list, out_script=None, cache_dir=None):
     '''
     This function takes a set of stations and a set of dates and it generates a bash script to download all
-    of the necessary cors_obs files into the correct place in the '.gnss_cache' folder and properly unzip each one.
+    of the necessary cors_obs files into the correct place in the '.gnss_cache' folder. Resulting files are left zipped.
     Importantly, it only does this for the stations that are present in the cors_obs ftp sites for the particular
     day. The bash script is located in the missile-tid/scripts folder.
 
@@ -376,21 +412,53 @@ def cors_download_commands(stns, dt_list, out_script='bash_cors_obs_download.sh'
 
     url_base1='https://geodesy.noaa.gov/corsdata/rinex/'
     # url_base2='ftp://alt.ngs.noaa.gov'
+    dtfrom=min(dt_list).strftime('%Y%m%d'); dtto=max(dt_list).strftime('%Y%m%d');
+    if out_script is None:
+        out_script = 'cors_obs_download_%s_to_%s.sh' % (dtfrom, dtto)
     bash_script = open(os.path.join(missile_tid_rootfold, 'scripts', out_script), 'w')
+    if cache_dir is None:
+        cache_dir = conf.laika_cache
     if cache_dir[0]=='~':
         cache_dir = os.path.expanduser(cache_dir)
 
-    def cors_url_to_bash(stn, tgt_date):
-        '''Changing this to not to the unzip command because we are going to start reading files directly as .gz'''
+    def cors_url_to_bash(stn, tgt_date, return_cmd_str=False):
+        '''Changing this to not to the unzip command because we are going to start reading files directly as .gz
+            Sample bash command for a single file given by 'blank_bash_cmd'. The script has some conditionals in it, but
+            the logic is relatively simple:
+                1) If either the <...>.YYo.gz or the <...>.YYd.gz file exists, skip this one.
+                2) If neither do, then try to get the uncompressed version (*.YYo.gz)
+                3) If that errors, then try to get the compressed version (*.YYd.gz)
+
+            Note: if 'return_cmd_str' is set to True, this function will return the command as a string rather than
+                writing it to the script file. That argument was mostly for debugging/testing.
+        '''
+        blank_bash_cmd = '''
+if [ -f {tgt1} ] || [ -f {tgt2} ]; then
+    echo '{tgtfold} exists';
+else
+    wget {url1} -P {tgtfold} -nc -T 20
+    if [ $? -eq 0 ]; then
+        echo {tgt1};
+    else
+        wget {url2} -P {tgtfold} -nc -T 20
+        if [ $? -eq 0 ];
+            then echo {tgt2};
+        fi;
+    fi;
+fi;        
+'''
         filename1 = stn + tgt_date.strftime("%j0.%yo.gz")
         filename2 = stn + tgt_date.strftime("%j0.%yd.gz")
         cors_file_url1 = url_base1 + tgt_date.strftime('%Y/%j/') + stn + '/' + filename1
         cors_file_url2 = url_base1 + tgt_date.strftime('%Y/%j/') + stn + '/' + filename2
         dl_target_fold = os.path.join(cache_dir, 'cors_obs', tgt_date.strftime('%Y'), tgt_date.strftime('%j'), stn)
-        l1ct = bash_script.write('wget %s -P %s -nc \n' % (cors_file_url1, dl_target_fold))
-        l2ct = bash_script.write('if [ $? -eq 0 ]; then echo %s; \n' % os.path.join(dl_target_fold, filename))
-        l3ct = bash_script.write('else wget %s -P %s -nc ; \n' % (cors_file_url2 , dl_target_fold))
-        l4ct = bash_script.write('if [ $? -eq 0 ]; then echo %s; fi; fi;\n\n' % os.path.join(dl_target_fold, filename))
+        tgt1 = os.path.join(dl_target_fold, filename1)
+        tgt2 = os.path.join(dl_target_fold, filename2)
+        cmd_args = {'tgt1': tgt1, 'tgt2': tgt2, 'tgtfold': dl_target_fold, 'url1': cors_file_url1, 'url2': cors_file_url2}
+        cmd_str = blank_bash_cmd.format(**cmd_args)
+        if return_cmd_str:
+            return cmd_str
+        l0ct = bash_script.write(cmd_str + '\n\n')
 
     for my_dt in dt_list:
         date_cors_stns = get_dt_cors_stns(my_dt)
@@ -399,6 +467,93 @@ def cors_download_commands(stns, dt_list, out_script='bash_cors_obs_download.sh'
             print('%s - %s' % (my_dt,s), end='\r', flush=True)
             cors_url_to_bash(s, my_dt)
     bash_script.close()
+
+def cors_hatanaka_decomp_script(stns, dt_list, out_script=None, cache_dir=None):
+    '''
+    This function operates similarly to the one above (cors_download_commands_script): it takes the station list and
+        date list for a scenario and produces a bash script, although this time the script runs commands to do
+        hatanaka decompression on any files stored in that format. The files to operate on are determined by walking
+        the cache folders and parsing the file names.
+
+    Parameters
+    ----------
+    stns        - <list of station IDs>
+    dt_list     - <list of datetimes>
+    out_script  - 'str' representing the file name of the resulting script
+    cache_dir   - path to the folder containing the laika cache
+
+    Returns:    None
+    -------
+    '''
+    dtfrom = min(dt_list).strftime('%Y%m%d'); dtto = max(dt_list).strftime('%Y%m%d');
+    if out_script is None:
+        out_script = 'cors_hatanaka_decomp_%s_to_%s.sh' % (dtfrom, dtto)
+    bash_script = open(os.path.join(missile_tid_rootfold, 'scripts', out_script), 'w')
+    if cache_dir is None:
+        cache_dir = conf.laika_cache
+    if cache_dir[0] == '~':
+        cache_dir = os.path.expanduser(cache_dir)
+    #
+    # Get path to hatanaka executables:
+    import hatanaka
+    hbindir = os.path.join(os.path.split(hatanaka.__file__)[0], 'bin')
+    decomp_exec = os.path.join(hbindir, 'crx2rnx')
+    assert os.path.isfile(decomp_exec), "Could not find Hatanaka executable at path: %s" % decomp_exec
+    perms = '{0:b}'.format(os.stat(decomp_exec).st_mode)[-9:]
+    assert perms[2]=='1' or perms['5']=='1', 'No execution priveleges on Hatanaka converter at: %s' % decomp_exec
+    #
+    # Walk the download folders for the file list:
+    cors_obs_flist = []
+    for tgt_date in dt_list:
+        dl_fold = os.path.join(cache_dir, 'cors_obs', tgt_date.strftime('%Y'), tgt_date.strftime('%j'))
+        for dp, dns, fns in os.walk(dl_fold):
+            for fi in fns:
+                cors_obs_flist.append((dp, fi))
+    #
+    # Make the script, include only compressed files with no uncompressed version present
+    # headers:
+    cors_obs_fp = os.path.join(cache_dir, 'cors_obs')
+    cct = bash_script.write('corsobs=%s\n' % cors_obs_fp)
+    cct = bash_script.write('c2r=%s\n' % decomp_exec)
+    cct = bash_script.write('\n')
+
+    # blank_cmd = 'gunzip {hfold}/{hfile} -c | {c2r} | gzip -c > {hfold}/{rfile};\n'
+    blank_cmd = '''gunzip {hfold}/{hfile} -c | {c2r} | gzip -c > {hfold}/{rfile};
+if [ $? -eq 0 ]; then
+    printf '\\rdone {ct} of {cttot}: {hfile}';
+else
+    printf '\\nerror in file {hfile}\\n';
+fi;
+'''
+    file_ct = 0;
+    flist_torun = [i for i in cors_obs_flist if i[1][-4:]=='d.gz' and not os.path.isfile(os.path.join(i[0],i[1].replace('d.gz','o.gz')))];
+    file_tot = len(flist_torun)
+
+    for f in cors_obs_flist:
+        fn = f[1]; fp = f[0]; fp_ls = os.listdir(fp);
+        if fn[-4:]=='d.gz':
+            if fn.replace('d.gz','o.gz') in fp_ls:
+                continue
+            bsargs = {'hfold': fp.replace(cors_obs_fp,'$corsobs'), 'hfile': fn, 'c2r': '$c2r',
+                      'rfile': fn.replace('d.gz','o.gz'), 'ct':file_ct, 'cttot': file_tot}
+            cct = bash_script.write(blank_cmd.format(**bsargs))
+            file_ct += 1
+            if file_ct % 100 == 0:
+                bash_script.write('echo \'done with %s out of %s\';\n' % (file_ct, len(cors_obs_flist)))
+    #
+    # Done
+    bash_script.close()
+
+def pickle_station_scenario_data(stn, startdate, duration_days, data):
+    '''
+    Specific routine to pickle station data for a scenario (i.e. a set of multiple days)
+    '''
+    cache_file_name = "stationdat_dense_%s_%s_to_%s.p" % (stn, startdate.strftime("%Y-%m-%d"),
+                                                          (startdate + duration_days).strftime("%Y-%m-%d"))
+    cache_path = os.path.join(conf.missile_tid_cache, 'stationdat', cache_file_name)
+    os.makedirs(os.path.join(conf.missile_tid_cache, 'stationdat'), exist_ok=True)
+    with open(cache_path, 'wb') as tempcache:
+        pickle.dump(data, tempcache)
 
 def get_ftp_folder_ls(site, folder):
     '''Pings an FTP folder and lists all the files in it.'''
@@ -584,11 +739,12 @@ class ScenarioInfo:
 
         for station in self.stations:
             print(station)
-            cache_name = "cached/stationdat_%s_%s_to_%s.p" % (
+            cache_name = "stationdat_%s_%s_to_%s.p" % (
                 station,
                 self.start_date.strftime("%Y-%m-%d"),
                 (self.start_date + self.duration).strftime("%Y-%m-%d")
             )
+            cache_name = os.path.join(conf.missile_tid_cache, 'stationdat', cache_name )
             # Check to see if we have cached this thing. If so, recover it from there
             if os.path.exists(cache_name):
                 self._station_data[station] = pickle.load(open(cache_name, "rb"))
@@ -611,7 +767,7 @@ class ScenarioInfo:
                     print("*** error with station " + station)
                     self.bad_stations.append(station)
                 date += timedelta(days=1)
-            os.makedirs("cached", exist_ok=True)
+            os.makedirs("stationdat", exist_ok=True)
             pickle.dump(self._station_data[station], open(cache_name, "wb"))
 
         for bad_station in self.bad_stations:
@@ -728,14 +884,74 @@ class ScenarioInfo:
 
 
 class ScenarioInfoDense(ScenarioInfo):
+    bypass_laika_downloader = True
 
     def __init__(self, dog, start_date, duration, stations, prn_list = None):
         ScenarioInfo.__init__(self, dog, start_date, duration, stations, prn_list=prn_list, data_struct='dense')
         self._row_by_prn_tick_index = None
+        self.dog = dog
         self.station_vtecs = None
         self.conns = None
         self.conn_map = None
         self.bias_repo = {}
+
+    def populate_station_locs(self):
+        '''Separates this step from the populate_data step. They didn't really need to be together.'''
+        for station in self.stations:
+            try:
+                self._station_locs[station] = get_station_position(station, cache_dir=self.dog.cache_dir)
+            except KeyError:
+                self._station_locs[station] = numpy.array(extra_station_info[station])
+
+    def prepare_data_sources(self, cache_file_prefix):
+        '''This does some of the legwork up front to see which stations' data can be recruited from where. Right
+        now this just tests for whether it is in the cache folder, and then failing that whether a folder for
+        that station is posted to either of the cors FTP sites on taht particular day. If there is at least
+        one on every day in the range, then that is the plan.
+
+        TODO: Add a round to check the misc_igs websites ater checking the cors sites.'''
+        self.date_list = get_dates_in_range(self.start_date, self.duration)
+        self.station_data_sources = dict.fromkeys(self.stations)
+        print('preparing data sources')
+
+        # First, run through each station to see if we have that pickle file
+        pickle_file_ct = 0
+        self.cache_file_prefix = cache_file_prefix
+        for stn in self.stations:
+            # cache_name = "cached/%s_%s_%s_to_%s.p" % ( cache_file_prefix, stn,
+            cache_name = "%s_%s_%s_to_%s.p" % (cache_file_prefix, stn,
+                self.start_date.strftime("%Y-%m-%d"), (self.start_date + self.duration).strftime("%Y-%m-%d"))
+            cache_name = os.path.join(conf.missile_tid_cache, 'stationdat', cache_name)
+            # print('cache_name: %s, exists=%s' % (cache_name, os.path.exists(cache_name)))
+            if os.path.exists(cache_name):
+                self.station_data_sources[stn]=('cached_pickle', cache_name)
+                pickle_file_ct += 1
+
+        # Then pull down the CORS lists for each day:
+        cors_lists = dict.fromkeys(range(len(self.date_list)))
+        for i in range(len(self.date_list)):
+            if self.bypass_laika_downloader:
+                cors_lists_d = cors_get_station_lists_for_day_from_laika_cache(self.date_list[i])
+            else:
+                cors_lists_d = cors_get_station_lists_for_day(self.date_list[i])
+            cors_lists[i] = cors_lists_d
+        self.cors_lists = cors_lists
+        cors_ftp_ct = 0
+        for stn in self.stations:
+            if self.station_data_sources[stn] is None:
+                stn_daily_options = []
+                stn_cors_ftp_ok_onedays = False
+                for i in range(len(self.date_list)):
+                    in_f1 = stn in cors_lists[i];
+                    if in_f1 :
+                        stn_cors_ftp_ok_onedays = True
+                    stn_daily_options.append(in_f1)
+                if stn_cors_ftp_ok_onedays:
+                    self.station_data_sources[stn] = ('cors_ftp', stn_daily_options)
+                    cors_ftp_ct += 1
+
+        print('%s total stns, %s are pickled, %s are on CORS ftp sites.' % (len(self.station_data_sources),
+                                                                            pickle_file_ct, cors_ftp_ct))
 
     def populate_data(self, parallel_proc=True):
         '''
@@ -760,6 +976,7 @@ class ScenarioInfoDense(ScenarioInfo):
             elif self.station_data_sources[cs][0]=='cached_pickle':
                 pickle_stns.append(cs)
         print('Station Data Sources: Cached=%s, ftp=%s, None=%s' % (len(pickle_stns), len(cors_stns), len(none_stns)))
+        self.pickle_stns=pickle_stns; self.cors_stns=cors_stns; self.none_stns=none_stns;
         # Take care of any stations that ended up in the none_stns list:
         if len(none_stns)>0:
             print('   \'None\' stations: %s' % str(none_stns))
@@ -782,7 +999,7 @@ class ScenarioInfoDense(ScenarioInfo):
         #       ( <AstroDog.cache_dir> , station, date_list, prn_list, start_date )
         for station in cors_stns:
             # my_dl is a list of dates for which the particular station is available for FTP download
-            my_dl=[self.date_list[i] for i in range(len(self.date_list)) if (self.station_data_sources[station][1][i][0] or self.station_data_sources[station][1][i][1])]
+            my_dl=[self.date_list[i] for i in range(len(self.date_list)) if self.station_data_sources[station][1][i]]
             args_list.append((self.dog.cache_dir, station, my_dl, self.prn_list.copy(), self.start_date))
 
         # *** STEP 2b ***: Using Multiprocessing to run the 'data_for_station' wrapper function
@@ -799,36 +1016,30 @@ class ScenarioInfoDense(ScenarioInfo):
                 for i in range(len(data_read)):
                     if data_read[i][1] is not None:
                         self._station_data[data_read[i][0]]=data_read[i][1]
+                    else:
+                        self.stations.remove(data_read[i][0])
                 print('%s of %s done (%s elapsed)' % (total_done, len(args_list), datetime.now()-tstart))
-
-                #Pickle them while we're here:
-                for i in range(len(data_read)):
-                    if data_read[i][1] is None:
-                        continue
-                    cache_file_name = "stationdat_dense_%s_%s_to_%s.p" % (data_read[i][0], self.start_date.strftime("%Y-%m-%d"),
-                                                                          (self.start_date + self.duration).strftime(
-                                                                              "%Y-%m-%d"))
-                    cache_path = os.path.join(missile_tid_rootfold, 'cached', cache_file_name)
-                    os.makedirs("cached", exist_ok=True)
-                    with open(cache_path, 'wb') as tempcache:
-                        print('pickling %s' % data_read[i][0], end='\r')
-                        pickle.dump(self._station_data[data_read[i][0]], tempcache)
+                print('   none stations: %s' % str([data_read[i][0] for i in range(len(data_read)) if data_read[i][1] is None]))
             p.close()
         else:
             # no multiprocessing: do them one at a time (womp, womp)
+            self.args_list = args_list
             for arg in args_list:
+                station = arg[1]
+                print('working on %s -- %s of %s done (%s elapsed)' % (station, total_done, len(args_list), datetime.now() - tstart), end='\r')
                 one_data_read = data_for_station_npstruct_wrapper(arg)
                 self._station_data[one_data_read[0]]=one_data_read[1]
                 total_done += 1
-                print('%s of %s done (%s elapsed)' % (total_done, len(args_list), datetime.now() - tstart))
-                #pickle it
-                cache_file_name = "stationdat_dense_%s_%s_to_%s.p" % (one_data_read[i][0], self.start_date.strftime("%Y-%m-%d"),
-                                                                      (self.start_date + self.duration).strftime("%Y-%m-%d"))
-                cache_path = os.path.join(missile_tid_rootfold, 'cached', cache_file_name)
-                os.makedirs("cached", exist_ok=True)
-                with open(cache_path, 'wb') as tempcache:
-                    print('pickling %s' % station, '\r')
-                    pickle.dump(self._station_data[station], tempcache)
+
+        # Now go through and all all of the satellite info:
+        self.stns_processed=populate_data_add_satellite_info_all(self._station_data, self.dog)
+
+        # Pickle all of the individual stations:
+        print('pickling: ')
+        for k in self.stns_processed:
+            print('\t%s' % k, end = '\r')
+            pickle_station_scenario_data(k, self.start_date, self.duration, self._station_data[k])
+        print('')
 
         # wrap up:
         print('Finishing data population process...')
@@ -885,7 +1096,8 @@ class ScenarioInfoDense(ScenarioInfo):
     def populate_data_index_from_pickled(self):
         '''Gives the option to read the row index from a cached file. Should probably verify it is the right one but
         that is for later.'''
-        dedicated_row_index_file_loc = os.path.join(conf.missile_tid_root, 'cached', 'conns','row_by_prn_tick_index.p')
+        # dedicated_row_index_file_loc = os.path.join(conf.missile_tid_root, 'cached', 'conns','row_by_prn_tick_index.p')
+        dedicated_row_index_file_loc = os.path.join(conf.missile_tid_cache, 'scenario_calcs', 'row_by_prn_tick_index.p')
         with open(dedicated_row_index_file_loc, 'rb') as rif:
             self._row_by_prn_tick_index = pickle.load(rif)
 
@@ -921,7 +1133,8 @@ class ScenarioInfoDense(ScenarioInfo):
         -------
 
         '''
-        conns_cache = os.path.join(missile_tid_rootfold, 'cached', 'conns')
+        conns_cache = os.path.join(conf.missile_tid_cache, 'scenario_calcs')
+        stns = list(self._station_data.keys())
         if save_to_cache:
             os.makedirs(conns_cache, exist_ok=True)
         if len(self.stations) > 200:
@@ -1023,6 +1236,7 @@ class ScenarioInfoDense(ScenarioInfo):
                     if not numpy.isnan(vt['raw_vtec']):
                         self.station_vtecs[stn][r]['corr_vtec'] = tec.correct_tec_vals(vt['raw_vtec'], vt['s_to_v'],
                                                                                        stn_bias, prn_bias)
+                        self.station_vtecs[stn][r]['is_bias_corrected']=1
         for station in bad_stations:
             print("missing bias data for %s: deleting vtecs" % station)
 
@@ -1150,6 +1364,11 @@ class ScenarioInfoDense(ScenarioInfo):
         mymean = lambda x: sum(x)/len(x)
         self.bias_est_avg = {k: mymean(day_biases[k].values()) for k in day_biases.keys()}
 
+    def bias_calc_est_avg(self):
+        ks = list(self.bias_repo.keys())
+        day_biases = self.bias_repo(min(ks))
+        self.bias_est_avg = {k: mymean(day_biases[k].values()) for k in day_biases.keys()}
+
     def save_bias_repo(self, clobber=False):
         '''Method to save the current version of the bias repository.'''
         if not clobber:
@@ -1164,7 +1383,7 @@ class ScenarioInfoDense(ScenarioInfo):
                     cct=myf.write('%s,%s,%s,%s,%s\n' % (dt, stnprn, grp, bias_calc, curr_time))
         myf.close()
 
-    def write_bias_QC_report(self, outpath=None):
+    def write_bias_QC_report(self, outpath=None, prefix=''):
         '''Writes the bias QC info to a file where it acts as a report of the stability'''
         if self.bias_QC_report is None:
             return
@@ -1173,8 +1392,10 @@ class ScenarioInfoDense(ScenarioInfo):
         n_prns = len(self.bias_QC_report['PRN_labels']); prns = self.bias_QC_report['PRN_labels'];
         bias_mu_std = self.bias_QC_report['PRN_bias_mu_std']
         if outpath is None:
+            if prefix != '':
+                prefix += '_'
             datestr = self.bias_QC_report['date'].strftime('%Y%m%d')
-            outpath = os.path.join(conf.missile_tid_cache,'bias_QC_%s_%diters_%dstns.txt' % (datestr,k,n))
+            outpath = os.path.join(conf.missile_tid_cache, prefix + 'bias_QC_%s_%diters_%dstns.txt' % (datestr,k,n))
 
         rpt = open(outpath,'w')
         cct = rpt.write('date:\t%s\n' % self.bias_QC_report['date'])
@@ -1232,6 +1453,43 @@ def quality_check_station_obs(station_matrix, max_absolute_n21_val = 5000):
     # nan_count = numpy.sum(numpy.isnan(N_21_t))
     quants =  numpy.quantile(N_21_t[numpy.where(numpy.logical_not(numpy.isnan(N_21_t)))], numpy.array([0., 0.05, 0.5, 0.95, 1. ]))
     return numpy.max(numpy.abs(quants)) <= max_absolute_n21_val
+
+def populate_data_add_satellite_info_all(stdata, dog):
+    '''Does the add_satellite_info routine for all matrices at once.'''
+    stns=stdata.keys()
+    t1=datetime.now()
+    stations_processed=[]
+    ct=0; n_stns = len(stns);
+
+    for s in stns:
+        ts=datetime.now()
+        print('station: %s (%d of %d) (time = %s, elapsed = %s)' % (s, ct, n_stns, t1, ts-t1), end = '\r')
+        ct +=1
+        st_mat = stdata[s]
+        st_mat.sort(axis=0, order = ['prn','tick'])
+
+        rows_to_process = numpy.where(st_mat['is_processed'] != 1)[0]
+        if rows_to_process.shape[0] > 0.1*st_mat.shape[0]:
+            print('skipping station %s, already all processed.' % s)
+            continue
+
+        # First, make a list of GPStime objects to match the rows of st_mat
+        adj_sec=adj_sec = st_mat['recv_time_sec'] - st_mat['C1C'] / constants.SPEED_OF_LIGHT
+        gps_times = list(map(lambda x: GPSTime(week=st_mat['recv_time_week'][x].item(), tow=adj_sec[x].item()),
+                       range(st_mat.shape[0])))
+
+        # Then pull the data and stick it in the matrix:
+        for i in rows_to_process:
+            si = dog.get_sat_info(st_mat['prn'][i].item(), gps_times[i]);
+            if si is None:
+                continue
+            st_mat['sat_clock_err'][i] = si[2]
+            st_mat['sat_pos_x'][i] = si[0][0]; st_mat['sat_pos_y'][i] = si[0][1]; st_mat['sat_pos_z'][i] = si[0][2];
+            st_mat['sat_vel_x'][i] = si[1][0]; st_mat['sat_vel_y'][i] = si[1][1]; st_mat['sat_vel_z'][i] = si[1][2];
+            st_mat['is_processed'][i] = 1;
+        stations_processed.append(s)
+    print('')
+    return stations_processed
 
 def populate_data_add_satellite_info(st_mat, cache_dir):
     '''
