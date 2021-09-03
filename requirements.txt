@@ -1,8 +1,0 @@
-matplotlib
-numpy
-pyproj
-pyyaml
--e git+git@github.com:commaai/laika.git#egg=laika
-scipy
--e git+git@github.com:matplotlib/basemap.git#egg=basemap
-ruptures

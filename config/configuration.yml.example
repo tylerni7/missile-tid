@@ -1,15 +1,1 @@
-# --------------------- #
-# - TID Configuration - #
-# --------------------- #
-# Acts as a project-level configuration for the TID repository
-
-gnss:
-  cache_dir: /path/to/.gnss_cache/
-  stations: ["flwe", "tn22", "zjx1"]
-  constellation_size: 33  # Number of GPS satellites in constellation
-
-logging:
-  datefmt: "%Y-%m-%d %H:%M:%S"
-
-plotting:
-  output_dir: plots
+cache_dir: ~/.gnss_cache/
