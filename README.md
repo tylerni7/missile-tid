@@ -12,6 +12,6 @@ In the near future we can add in some tests and some github actions to enforce t
 ## Authors
 Because of the refactor, this branch wiped out a lot of author information.
 
-This code was primarily written by @tylerni7 and @MNNute
+This code was primarily written by @tylerni7 and @MGNute
 
 Further contribution from @tinfoil-globe, @Tobychev, and @jmccartin
