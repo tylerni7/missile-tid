@@ -2,9 +2,9 @@
 #
 
 # You can set these variables from the command line.
-SPHINXOPTS    = "-W"  # This flag turns warnings into errors.
+SPHINXOPTS    = -W  --keep-going  # This flag turns warnings into errors, but runs
 SPHINXBUILD   = sphinx-build
-SPHINXPROJ    = PackagingScientificPython
+SPHINXPROJ    = tid
 SOURCEDIR     = source
 BUILDDIR      = build
 
@@ -18,3 +18,6 @@ help:
 # "make mode" option.  $(O) is meant as a shortcut for $(SPHINXOPTS).
 %: Makefile
 	@$(SPHINXBUILD) -M $@ "$(SOURCEDIR)" "$(BUILDDIR)" $(SPHINXOPTS) $(O)
+
+show:
+	@python -c "import webbrowser; webbrowser.open_new_tab('file://$(shell pwd)/build/html/index.html')"
