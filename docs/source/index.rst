@@ -11,5 +11,6 @@ missle-tid Documentation
 
    installation
    usage
+   reference
    release-history
    min_versions
