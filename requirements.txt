@@ -1,0 +1,6 @@
+# List required packages in this file, one per line.
+
+laika @ git+https://github.com/commaai/laika#egg=laika
+matplotlib
+numpy
+scipy
