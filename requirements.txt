@@ -3,4 +3,5 @@
 laika @ git+https://github.com/commaai/laika#egg=laika
 matplotlib
 numpy
+ruptures
 scipy
