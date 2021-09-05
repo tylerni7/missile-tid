@@ -48,7 +48,7 @@ def _get_dates_in_range(
     """
     dates = [start_date]
     last_date = start_date + timedelta(days=1)
-    while last_date > dates[0] + duration:
+    while last_date < dates[0] + duration:
         dates.append(last_date)
         last_date += timedelta(days=1)
     return dates
