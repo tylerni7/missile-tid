@@ -70,7 +70,7 @@ class Connection:
         """
         The frequencies that correspond to this connection
         """
-        frequencies = self.scenario.get_frequencies(self.observations)
+        frequencies = self.scenario.get_frequencies(self.prn, self.observations)
         assert frequencies is not None, "Unknown frequencies INSIDE connection object"
         return frequencies
 
@@ -123,7 +123,7 @@ class Connection:
         the code and carrier phases.
         """
         chan2 = util.channel2(self.observations)
-        frequencies = self.scenario.get_frequencies(self.observations)
+        frequencies = self.scenario.get_frequencies(self.prn, self.observations)
         # can't do anything without frequencies, use NaN to indicate failure later on
         if not frequencies:
             self.offset = numpy.nan

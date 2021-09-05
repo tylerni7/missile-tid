@@ -17,8 +17,8 @@ from tid import get_data
 DenseMeasurements = Dict[str, numpy.array]
 
 DENSE_TYPE = [
-    ("station", "U4"),  # name of the ground station
-    ("prn", "U3"),  # name of the GNSS satellite (one letter then 2 digit number)
+    #    ("station", "U4"),  # name of the ground station
+    #    ("prn", "U3"),  # name of the GNSS satellite (one letter then 2 digit number)
     ("tick", "i4"),  # tick number the observation was made
     ("C1C", "f8"),  # GNSS measurements, if available
     ("C2C", "f8"),
@@ -60,8 +60,8 @@ def _meas_to_tuple(raw_meas: GNSSMeasurement, station_name: str, tick: int) -> t
         tuple of the data values in question
     """
     return (
-        station_name,
-        raw_meas.prn,
+        #        station_name,
+        #        raw_meas.prn,
         tick,
         raw_meas.observables.get("C1C", numpy.nan),
         raw_meas.observables.get("C2C", numpy.nan),

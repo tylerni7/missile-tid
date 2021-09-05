@@ -27,9 +27,7 @@ IONOSPHERE_MAX_D = constants.EARTH_RADIUS + 350000
 C = constants.SPEED_OF_LIGHT
 
 
-def melbourne_wubbena(
-    scn: Scenario, observations: numpy.array
-) -> Optional[numpy.array]:
+def melbourne_wubbena(frequencies, observations: numpy.array) -> Optional[numpy.array]:
     """
     Calculate the Melbourne Wubbena signal combination for these observations.
     This relies on being able to get the frequencies (which can sometimes fail for
@@ -44,7 +42,7 @@ def melbourne_wubbena(
     """
     # calculate Melbourne Wubbena, this should be relatively constant
     # during a single connection
-    frequencies = scn.get_frequencies(observations)
+
     # if we can't get this, we won't be able to do our other calculations anyway
     if frequencies is None:
         return None
