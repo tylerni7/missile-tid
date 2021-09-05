@@ -159,9 +159,7 @@ class Scenario:
         with h5py.File(fname, mode) as fout:
             for station, sats in self.station_data.items():
                 for prn, data in sats.items():
-                    fout.create_dataset(
-                        f"data/{station}/{prn}", data=data, compression="gzip"
-                    )
+                    fout.create_dataset(f"data/{station}/{prn}", data=data)
             for station, loc in self.station_locs.items():
                 fout[f"loc/{station}"] = loc
             fout.attrs.update(
