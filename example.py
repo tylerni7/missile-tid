@@ -13,3 +13,4 @@ dog = AstroDog(cache_dir=conf.cache_dir)
 date = util.datetime_fromstr("2019-06-12")
 
 sc = scenario.Scenario(date, 1 * util.DAYS, ["slac", "flwe"])
+sc.make_connections()
