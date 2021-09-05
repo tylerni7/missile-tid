@@ -14,9 +14,9 @@ from laika import constants
 from tid import util
 
 
-# deal with circular type definitions for Scenario
+# deal with circular type definitions
 if TYPE_CHECKING:
-    from tid.scenario import Connection, Scenario
+    from tid.connections import Connection
 
 K = 40.308e16
 M_TO_TEC = 6.158  # meters of L1 error to TEC
