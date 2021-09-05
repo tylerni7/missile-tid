@@ -30,7 +30,9 @@ DISCON_TIME = 4  # cycle slip for >= 4 samples without info
 EL_CUTOFF = 0.25  # elevation cutoff in radians, shallower than this ignored
 
 
-def get_dates_in_range(start_date: datetime, duration: timedelta) -> Iterable[datetime]:
+def _get_dates_in_range(
+    start_date: datetime, duration: timedelta
+) -> Iterable[datetime]:
     """
     Get a list of dates, starting with start_date, each 1 day apart
 
@@ -49,6 +51,72 @@ def get_dates_in_range(start_date: datetime, duration: timedelta) -> Iterable[da
     return dates
 
 
+def _correct_satellite_info(dog, prn, data: numpy.array) -> None:
+    """
+    Go through the observables data and do small satellite correction fixing stuff
+
+    Args:
+        data: the observables data to correct for one satellite
+    """
+    adj_sec = data["recv_time_sec"] - data["C1C"] / constants.SPEED_OF_LIGHT
+    for i, entry in enumerate(data):
+        time_of_interest = GPSTime(week=int(entry["recv_time_week"]), tow=adj_sec[i])
+        sat_info = dog.get_sat_info(prn, time_of_interest)
+        # laika doesn't fall back to less-accurate NAV data if SP3 data is unavailable
+        # if sat_info is empty, we can try it ourselves
+        if sat_info is None:
+            eph = dog.get_nav(prn, time_of_interest)
+            if eph is None:
+                continue
+            sat_info = eph.get_sat_info(time_of_interest)
+
+        # if it's still empty, it's a lost cause
+        if sat_info is None:
+            continue
+        entry["sat_clock_err"] = sat_info[2]
+        entry["sat_pos"] = sat_info[0]
+        entry["sat_vel"] = sat_info[1]
+        entry["is_processed"] = True
+
+
+def _populate_data(
+    stations, date_list, dog
+) -> Tuple[Dict[str, Iterable[float]], Dict[str, Dict[str, numpy.array]]]:
+    """
+    Download/populate the station data and station location info
+
+    TODO: is this a good place to be caching results?
+    """
+
+    # dict of station names -> XYZ ECEF locations in meters
+    station_locs: Dict[str, Iterable[float]] = {}
+    # dict of station names -> dict of prn -> numpy observation data
+    station_data: Dict[str, Dict[str, numpy.array]] = {}
+
+    for station in stations:
+        for date in date_list:
+            gps_date = GPSTime.from_datetime(date)
+            try:
+                latest_data = dense_data.dense_data_for_station(dog, gps_date, station)
+            except DownloadError:
+                continue
+            if station not in station_data:
+                station_data[station] = latest_data
+            else:
+                # we've already got some data, so merge it together
+                station_data[station] = dense_data.merge_data(
+                    station_data[station], latest_data
+                )
+            if station not in station_locs:
+                station_locs[station] = get_data.location_for_station(
+                    dog, gps_date, station
+                )
+
+        for prn, obs_data in station_data[station].items():
+            _correct_satellite_info(dog, prn, obs_data)
+    return station_locs, station_data
+
+
 class Scenario:
     """
     This class stores information which is shared during each "engagement"
@@ -58,7 +126,39 @@ class Scenario:
     """
 
     def __init__(
-        self, start_date: datetime, duration: timedelta, stations: Iterable[str]
+        self,
+        start_date: datetime,
+        duration: timedelta,
+        station_locs: Dict[str, Iterable[float]],
+        station_data: Dict[str, Dict[str, numpy.array]],
+        dog: AstroDog,
+        conn_map=None,
+    ) -> None:
+        self.dog = dog
+        self.cache_dir = dog.cache_dir
+        self.start_date = start_date
+        self.date_list = _get_dates_in_range(start_date, duration)
+        self.duration = duration
+
+        self.stations = set(station_data)
+
+        self.station_locs = station_locs
+        self.station_data = station_data
+
+        self.conn_map = conn_map
+
+        # biases to be calculated of prn or station to clock bias in meters (C*time)
+        # by some weird convention I don't get, these have opposite signs applied to them
+        self.sat_biases: Dict[str, float] = {}
+        self.rcvr_biases: Dict[str, float] = {}
+
+    @classmethod
+    def from_raw(
+        cls,
+        start_date: datetime,
+        duration: timedelta,
+        stations: Iterable[str],
+        dog: Optional[AstroDog],
     ) -> None:
         """
         Args:
@@ -68,87 +168,17 @@ class Scenario:
 
         TODO: populate stations automatically?
         """
-        self.dog = AstroDog(cache_dir=conf.cache_dir)
-        self.cache_dir: str = conf.cache_dir
-        self.start_date = start_date
-        self.duration = duration
-        self.date_list = get_dates_in_range(start_date, duration)
-        self.stations = set(stations)
+        if dog is None:
+            dog = AstroDog(cache_dir=conf.cache_dir)
 
-        # dict of station names -> XYZ ECEF locations in meters
-        self.station_locs: Dict[str, Iterable[float]] = {}
-        # dict of station names -> dict of prn -> numpy observation data
-        self.station_data: Dict[str, Dict[str, numpy.array]] = {}
+        dog = dog
+        start_date = start_date
+        duration = duration
+        date_list = _get_dates_in_range(start_date, duration)
+        stations = set(stations)
+        locs, data = _populate_data(stations, date_list, dog)
 
-        self.conn_map = None
-
-        # biases to be calculated of prn or station to clock bias in meters (C*time)
-        # by some weird convention I don't get, these have opposite signs applied to them
-        self.sat_biases: Dict[str, float] = {}
-        self.rcvr_biases: Dict[str, float] = {}
-
-        self._populate_data()
-
-    def _populate_data(self) -> None:
-        """
-        Download/populate the station data and station location info
-
-        TODO: is this a good place to be caching results?
-        """
-        assert len(self.station_data) == 0, "data already populated"
-
-        for station in self.stations:
-            for date in self.date_list:
-                gps_date = GPSTime.from_datetime(date)
-                try:
-                    latest_data = dense_data.dense_data_for_station(
-                        self.dog, gps_date, station
-                    )
-                except DownloadError:
-                    continue
-                if station not in self.station_data:
-                    self.station_data[station] = latest_data
-                else:
-                    # we've already got some data, so merge it together
-                    self.station_data[station] = dense_data.merge_data(
-                        self.station_data[station], latest_data
-                    )
-                if station not in self.station_locs:
-                    self.station_locs[station] = get_data.location_for_station(
-                        self.dog, gps_date, station
-                    )
-
-            for prn, obs_data in self.station_data[station].items():
-                self.correct_satellite_info(prn, obs_data)
-
-    def correct_satellite_info(self, prn, data: numpy.array) -> None:
-        """
-        Go through the observables data and do small satellite correction fixing stuff
-
-        Args:
-            data: the observables data to correct for one satellite
-        """
-        adj_sec = data["recv_time_sec"] - data["C1C"] / constants.SPEED_OF_LIGHT
-        for i, entry in enumerate(data):
-            time_of_interest = GPSTime(
-                week=int(entry["recv_time_week"]), tow=adj_sec[i]
-            )
-            sat_info = self.dog.get_sat_info(prn, time_of_interest)
-            # laika doesn't fall back to less-accurate NAV data if SP3 data is unavailable
-            # if sat_info is empty, we can try it ourselves
-            if sat_info is None:
-                eph = self.dog.get_nav(prn, time_of_interest)
-                if eph is None:
-                    continue
-                sat_info = eph.get_sat_info(time_of_interest)
-
-            # if it's still empty, it's a lost cause
-            if sat_info is None:
-                continue
-            entry["sat_clock_err"] = sat_info[2]
-            entry["sat_pos"] = sat_info[0]
-            entry["sat_vel"] = sat_info[1]
-            entry["is_processed"] = True
+        return cls(start_date, duration, locs, data, dog)
 
     @lru_cache(maxsize=None)
     def _station_converter(self, station: str) -> coordinates.LocalCoord:
