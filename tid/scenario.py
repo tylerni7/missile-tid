@@ -213,7 +213,6 @@ class Scenario:
             dog = AstroDog(cache_dir=conf.cache_dir)
         cache_key = cls.compute_cache_key(start_date, duration, stations)
         cache_path = Path(conf.cache_dir) / "scenarios" / f"{cache_key}.hdf5"
-        print(cache_path, cache_path.exists())
         if use_cache and cache_path.exists():
             return cls.from_hdf5(cache_path, dog=dog)
 
@@ -223,7 +222,6 @@ class Scenario:
         sc = cls(start_date, duration, locs, data, dog)
         if use_cache:
             cache_path.parent.mkdir(exist_ok=True)
-            print(cache_path.parent, cache_path.parent.exists())
             sc.to_hdf5(cache_path, mode="w")
         return sc
 
