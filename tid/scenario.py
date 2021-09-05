@@ -152,19 +152,59 @@ class Scenario:
         self.sat_biases: Dict[str, float] = {}
         self.rcvr_biases: Dict[str, float] = {}
 
+    def to_hdf5(self, fname: Path, *, mode="w-"):
+        # defer / hide import
+        import h5py
+
+        with h5py.File(fname, mode) as fout:
+            for station, sats in self.station_data.items():
+                for prn, data in sats.items():
+                    fout.create_dataset(
+                        f"data/{station}/{prn}", data=data, compression="gzip"
+                    )
+            for station, loc in self.station_locs.items():
+                fout[f"loc/{station}"] = loc
+            fout.attrs.update(
+                {
+                    "start_date": self.start_date.timestamp(),
+                    "duration": self.duration.total_seconds(),
+                }
+            )
+
     @classmethod
-    def from_raw(
+    def from_hdf5(cls, fname: Path, *, dog: Optional[AstroDog] = None):
+        # defer / hide import
+        import h5py
+
+        if dog is None:
+            dog = AstroDog(cache_dir=conf.cache_dir)
+        with h5py.File(fname, "r") as fin:
+            start_date = datetime.fromtimestamp(fin.attrs["start_date"])
+            duration = timedelta(seconds=int(fin.attrs["duration"]))
+            station_data = {
+                station: {sat: ds[:] for sat, ds in group.items()}
+                for station, group in fin["data"].items()
+            }
+            station_locs = {station: ds[:] for station, ds in fin["loc"].items()}
+
+        return cls(start_date, duration, station_locs, station_data, dog)
+
+    @classmethod
+    def from_daterange(
         cls,
         start_date: datetime,
         duration: timedelta,
         stations: Iterable[str],
-        dog: Optional[AstroDog],
+        dog: Optional[AstroDog] = None,
     ) -> None:
         """
         Args:
             start_date: when to start the scenario
             duration: how long the scenario should last
             stations: list of stations to use
+            dog: Optional, AstroDog instance to use to manage data access
+        Returns:
+            scenario: The requested Scenario
 
         TODO: populate stations automatically?
         """
@@ -223,7 +263,7 @@ class Scenario:
         """
         time = GPSTime(
             week=int(observations[0]["recv_time_week"]),
-            tow=observations[0]["recv_time_sec"],
+            tow=float(observations[0]["recv_time_sec"]),
         )
         f1, f2 = [self.dog.get_frequency(prn, time, band) for band in ("C1C", "C2C")]
         # if the lookup didn't work, we can't proceed
