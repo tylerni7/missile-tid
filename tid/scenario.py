@@ -11,6 +11,7 @@ from typing import Dict, Iterable, Optional, Tuple
 
 import ruptures
 import numpy
+import h5py
 
 from laika import AstroDog, constants
 from laika.gps_time import GPSTime
@@ -153,9 +154,6 @@ class Scenario:
         self.rcvr_biases: Dict[str, float] = {}
 
     def to_hdf5(self, fname: Path, *, mode="w-"):
-        # defer / hide import
-        import h5py
-
         with h5py.File(fname, mode) as fout:
             for station, sats in self.station_data.items():
                 for prn, data in sats.items():
@@ -173,9 +171,6 @@ class Scenario:
 
     @classmethod
     def from_hdf5(cls, fname: Path, *, dog: Optional[AstroDog] = None):
-        # defer / hide import
-        import h5py
-
         if dog is None:
             dog = AstroDog(cache_dir=conf.cache_dir)
         with h5py.File(fname, "r") as fin:

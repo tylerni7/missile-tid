@@ -1,5 +1,6 @@
 # List required packages in this file, one per line.
 
+h5py
 laika @ git+https://github.com/commaai/laika#egg=laika
 matplotlib
 numpy
