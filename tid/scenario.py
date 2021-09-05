@@ -211,9 +211,6 @@ class Scenario:
         if dog is None:
             dog = AstroDog(cache_dir=conf.cache_dir)
 
-        dog = dog
-        start_date = start_date
-        duration = duration
         date_list = _get_dates_in_range(start_date, duration)
         stations = set(stations)
         locs, data = _populate_data(stations, date_list, dog)
