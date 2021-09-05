@@ -6,12 +6,12 @@ belong in here
 """
 from __future__ import annotations  # defer type annotations due to circular stuff
 
-from typing import TYPE_CHECKING, Optional, Tuple
+from typing import TYPE_CHECKING, Optional
 import numpy
 
 from laika import constants
 
-from tid import connections, util
+from tid import util
 
 
 # deal with circular type definitions for Scenario
@@ -144,7 +144,8 @@ def ion_locs(
 
     common = numpy.sqrt(b ** 2 - (4 * a * c)) / (2 * a)
     b_scaled = -b / (2 * a)
-    solutions = numpy.stack((b_scaled + common, b_scaled - common), axis=1)
+    # TODO, I think the there is a clever way to vectorize the loop below
+    # solutions = numpy.stack((b_scaled + common, b_scaled - common), axis=1)
 
     # for each solution, use the one with the smallest absolute value
     # (that is the closest intersection, the other is the further intersection)

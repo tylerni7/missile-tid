@@ -1,6 +1,6 @@
 from laika import AstroDog
 
-from tid import get_data, util, scenario
+from tid import util, scenario
 from tid.config import Configuration
 
 # load configuration data

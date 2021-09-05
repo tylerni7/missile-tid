@@ -19,7 +19,8 @@ from laika.rinex_file import DownloadError
 
 from tid.config import Configuration
 from tid.connections import Connection, ConnTickMap
-from tid import dense_data, get_data, tec, util
+from tid import dense_data, get_data, tec
+
 
 # load configuration data
 conf = Configuration()

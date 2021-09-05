@@ -1,4 +1,6 @@
 [flake8]
+# flake and black disagree sometimes
+ignore = E203
 exclude =
     .git,
     __pycache__,

@@ -5,7 +5,7 @@ Things to manage those are stored here
 """
 from __future__ import annotations  # defer type annotations due to circular stuff
 from functools import cached_property
-from typing import TYPE_CHECKING, Iterable, Optional, Tuple
+from typing import TYPE_CHECKING, Iterable, Tuple
 
 import numpy
 
