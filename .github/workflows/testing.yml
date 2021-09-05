@@ -17,7 +17,10 @@ jobs:
       uses: actions/setup-python@v2
       with:
         python-version: ${{ matrix.python-version }}
-    - name: Install dependencies
+
+    - name: Install system-deps (for pycurl)
+      run: sudo apt-get install libcurl4-gnutls-dev libgnutls28-dev
+    - name: Install Python packgaes
       run: |
         # These packages are installed in the base environment but may be older
         # versions. Explicitly upgrade them because they often create
