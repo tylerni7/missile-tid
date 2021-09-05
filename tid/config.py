@@ -3,9 +3,9 @@
 Reads shared config and makes object available for use by other modules
 """
 import os
+import os.path
 import yaml
-from pathlib import Path
-from typeing import Union
+
 
 from ._errors import TidRuntimeError
 
@@ -20,7 +20,7 @@ _GLOBAL_CONFIG = None
 class Configuration:
     """Actual configuration object."""
 
-    def __init__(self, config_file: Union[str, os.PathLike] = default_config) -> None:
+    def __init__(self, config_file: str = default_config) -> None:
         """
         Parameters
         ----------
@@ -30,7 +30,7 @@ class Configuration:
 
         with open(self.config_file, encoding="utf-8") as fname:
             self.conf = yaml.safe_load(fname)
-            self.cache_dir = Path(self.conf["cache_dir"]).expanduser()
+            self.cache_dir = os.path.expanduser(self.conf["cache_dir"])
 
 
 def set_global_config(config: Configuration) -> None:
