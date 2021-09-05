@@ -8,7 +8,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: [3.7, 3.8]
+        python-version: [3.8, 3.9]
       fail-fast: false
 
     steps:
@@ -22,7 +22,7 @@ jobs:
         # These packages are installed in the base environment but may be older
         # versions. Explicitly upgrade them because they often create
         # installation problems if out of date.
-        python -m pip install --upgrade pip setuptools numpy
+        python -m pip install --upgrade pip setuptools numpy scipy
 
         pip install .
         pip install -r requirements-dev.txt
