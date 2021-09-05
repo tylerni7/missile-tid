@@ -1,0 +1,12 @@
+[flake8]
+# flake and black disagree sometimes
+ignore = E203,W503
+exclude =
+    .git,
+    __pycache__,
+    build,
+    dist,
+    versioneer.py,
+    tid/_version.py,
+    docs/source/conf.py
+max-line-length = 115

@@ -57,3 +57,4 @@ plots
 # Project-specific
 resources/*
 
+*.egg-info

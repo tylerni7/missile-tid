@@ -6,17 +6,17 @@ belong in here
 """
 from __future__ import annotations  # defer type annotations due to circular stuff
 
-from typing import TYPE_CHECKING, Optional, Tuple
+from typing import TYPE_CHECKING, Optional
 import numpy
 
 from laika import constants
 
-from tid import connections, util
+from tid import util
 
 
-# deal with circular type definitions for Scenario
+# deal with circular type definitions
 if TYPE_CHECKING:
-    from tid.scenario import Connection, Scenario
+    from tid.connections import Connection
 
 K = 40.308e16
 M_TO_TEC = 6.158  # meters of L1 error to TEC
@@ -27,9 +27,7 @@ IONOSPHERE_MAX_D = constants.EARTH_RADIUS + 350000
 C = constants.SPEED_OF_LIGHT
 
 
-def melbourne_wubbena(
-    scn: Scenario, observations: numpy.array
-) -> Optional[numpy.array]:
+def melbourne_wubbena(frequencies, observations: numpy.array) -> Optional[numpy.array]:
     """
     Calculate the Melbourne Wubbena signal combination for these observations.
     This relies on being able to get the frequencies (which can sometimes fail for
@@ -44,7 +42,7 @@ def melbourne_wubbena(
     """
     # calculate Melbourne Wubbena, this should be relatively constant
     # during a single connection
-    frequencies = scn.get_frequencies(observations)
+
     # if we can't get this, we won't be able to do our other calculations anyway
     if frequencies is None:
         return None
@@ -144,7 +142,8 @@ def ion_locs(
 
     common = numpy.sqrt(b ** 2 - (4 * a * c)) / (2 * a)
     b_scaled = -b / (2 * a)
-    solutions = numpy.stack((b_scaled + common, b_scaled - common), axis=1)
+    # TODO, I think the there is a clever way to vectorize the loop below
+    # solutions = numpy.stack((b_scaled + common, b_scaled - common), axis=1)
 
     # for each solution, use the one with the smallest absolute value
     # (that is the closest intersection, the other is the further intersection)

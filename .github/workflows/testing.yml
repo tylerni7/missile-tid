@@ -1,0 +1,36 @@
+name: Unit Tests
+
+on: [push, pull_request]
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [3.8, 3.9]
+      fail-fast: false
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v2
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Install system-deps (for pycurl)
+      run: sudo apt-get install libcurl4-gnutls-dev libgnutls28-dev
+    - name: Install Python packgaes
+      run: |
+        # These packages are installed in the base environment but may be older
+        # versions. Explicitly upgrade them because they often create
+        # installation problems if out of date.
+        python -m pip install --upgrade pip setuptools numpy scipy
+
+        pip install .
+        pip install -r requirements-dev.txt
+        pip list
+    - name: Test with pytest
+      run: |
+        coverage run -m pytest -vv
+        coverage report -m

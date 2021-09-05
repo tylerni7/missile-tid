@@ -1,0 +1,21 @@
+name: Check Code Style - BLACK
+
+on: [push, pull_request]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions/setup-python@v2
+      - name: Install Dependencies
+        run: |
+          # These packages are installed in the base environment but may be older
+          # versions. Explicitly upgrade them because they often create
+          # installation problems if out of date.
+          python -m pip install --upgrade pip setuptools numpy
+
+          pip install black
+      - name: Run black
+        run: |
+          black . --check

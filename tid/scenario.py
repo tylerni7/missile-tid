@@ -19,7 +19,8 @@ from laika.rinex_file import DownloadError
 
 from tid.config import Configuration
 from tid.connections import Connection, ConnTickMap
-from tid import dense_data, get_data, tec, util
+from tid import dense_data, get_data, tec
+
 
 # load configuration data
 conf = Configuration()
@@ -117,10 +118,10 @@ class Scenario:
                         self.dog, gps_date, station
                     )
 
-            for _, obs_data in self.station_data[station].items():
-                self.correct_satellite_info(obs_data)
+            for prn, obs_data in self.station_data[station].items():
+                self.correct_satellite_info(prn, obs_data)
 
-    def correct_satellite_info(self, data: numpy.array) -> None:
+    def correct_satellite_info(self, prn, data: numpy.array) -> None:
         """
         Go through the observables data and do small satellite correction fixing stuff
 
@@ -132,11 +133,11 @@ class Scenario:
             time_of_interest = GPSTime(
                 week=int(entry["recv_time_week"]), tow=adj_sec[i]
             )
-            sat_info = self.dog.get_sat_info(entry["prn"], time_of_interest)
+            sat_info = self.dog.get_sat_info(prn, time_of_interest)
             # laika doesn't fall back to less-accurate NAV data if SP3 data is unavailable
             # if sat_info is empty, we can try it ourselves
             if sat_info is None:
-                eph = self.dog.get_nav(entry["prn"], time_of_interest)
+                eph = self.dog.get_nav(prn, time_of_interest)
                 if eph is None:
                     continue
                 sat_info = eph.get_sat_info(time_of_interest)
@@ -182,7 +183,7 @@ class Scenario:
         pass
 
     def get_frequencies(
-        self, observations: numpy.array
+        self, prn, observations: numpy.array
     ) -> Optional[Tuple[float, float]]:
         """
         Get the channel 1 and 2 frequencies corresponding to the given observations
@@ -190,7 +191,6 @@ class Scenario:
         Args:
             observations: observations containing time and PRN information
         """
-        prn = observations[0]["prn"]
         time = GPSTime(
             week=int(observations[0]["recv_time_week"]),
             tow=observations[0]["recv_time_sec"],
@@ -202,7 +202,7 @@ class Scenario:
         return f1, f2
 
     def _get_connections_internal(
-        self, observations: numpy.array, el_cutoff: float = EL_CUTOFF
+        self, station, prn, observations: numpy.array, el_cutoff: float = EL_CUTOFF
     ) -> Iterable[Connection]:
         """
         Get a list of Connections given observations
@@ -215,13 +215,13 @@ class Scenario:
             a list of Connection objects
         """
         bkpoints = set()
-        station = observations[0]["station"]
-        prn = observations[0]["prn"]
 
         # first pass: when tickcount jumps by >= DISCON_TIME
         bkpoints |= set(numpy.where(numpy.diff(observations["tick"]) >= DISCON_TIME)[0])
 
-        mw_signal = tec.melbourne_wubbena(self, observations)
+        mw_signal = tec.melbourne_wubbena(
+            self.get_frequencies(prn, observations), observations
+        )
         # if this calculation failed, we don't have proper dual channel info anyway
         if mw_signal is None:
             return []
@@ -299,7 +299,7 @@ class Scenario:
         for station, svmap in self.station_data.items():
             self.conn_map[station] = {}
             for prn, observations in svmap.items():
-                cons = self._get_connections_internal(observations)
+                cons = self._get_connections_internal(station, prn, observations)
                 for con in cons:
                     con.correct_ambiguities()
                 self.conn_map[station][prn] = ConnTickMap(cons)
