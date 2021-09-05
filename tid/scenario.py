@@ -8,6 +8,8 @@ from __future__ import annotations  # defer type annotations due to circular stu
 from datetime import datetime, timedelta
 from functools import lru_cache
 from typing import Dict, Iterable, Optional, Tuple
+from pathlib import Path
+import hashlib
 
 import ruptures
 import numpy
@@ -191,6 +193,8 @@ class Scenario:
         duration: timedelta,
         stations: Iterable[str],
         dog: Optional[AstroDog] = None,
+        *,
+        use_cache: bool = True,
     ) -> None:
         """
         Args:
@@ -198,19 +202,40 @@ class Scenario:
             duration: how long the scenario should last
             stations: list of stations to use
             dog: Optional, AstroDog instance to use to manage data access
+            use_cache: Optional, if should consider TID's cache
         Returns:
             scenario: The requested Scenario
 
         TODO: populate stations automatically?
         """
+
         if dog is None:
             dog = AstroDog(cache_dir=conf.cache_dir)
+        cache_key = cls.compute_cache_key(start_date, duration, stations)
+        cache_path = Path(conf.cache_dir) / "scenarios" / f"{cache_key}.hdf5"
+        print(cache_path, cache_path.exists())
+        if use_cache and cache_path.exists():
+            return cls.from_hdf5(cache_path, dog=dog)
 
         date_list = _get_dates_in_range(start_date, duration)
         stations = set(stations)
         locs, data = _populate_data(stations, date_list, dog)
+        sc = cls(start_date, duration, locs, data, dog)
+        if use_cache:
+            cache_path.parent.mkdir(exist_ok=True)
+            print(cache_path.parent, cache_path.parent.exists())
+            sc.to_hdf5(cache_path, mode="w")
+        return sc
 
-        return cls(start_date, duration, locs, data, dog)
+    @staticmethod
+    def compute_cache_key(
+        start_date: datetime, duration: timedelta, stations: Iterable[str]
+    ) -> str:
+        h = hashlib.md5()
+        h.update(repr(sorted(stations)).encode())
+        h.update(start_date.isoformat().encode())
+        h.update(repr(duration.total_seconds()).encode())
+        return h.hexdigest()
 
     @lru_cache(maxsize=None)
     def _station_converter(self, station: str) -> coordinates.LocalCoord:
