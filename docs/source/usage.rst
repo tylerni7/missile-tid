@@ -2,7 +2,7 @@
 Usage
 =====
 
-Start by importing missle-tid.
+Start by importing missile-tid.
 
 .. code-block:: python
 

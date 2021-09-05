@@ -46,7 +46,7 @@ setup(
     description="Ionospheric measurements from GPS to detect launches.",
     long_description=readme,
     author="Tyler Nighswander, Michael Nute",
-    url="https://github.com/tylerni7/missle-tid",
+    url="https://github.com/tylerni7/missile-tid",
     python_requires=">={}".format(".".join(str(n) for n in min_version)),
     packages=find_packages(exclude=["docs", "tests"]),
     entry_points={

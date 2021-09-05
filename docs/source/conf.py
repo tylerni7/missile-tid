@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 #
-# missle-tid documentation build configuration file, created by
+# missile-tid documentation build configuration file, created by
 # sphinx-quickstart on Thu Jun 28 12:35:56 2018.
 #
 # This file is execfile()d with the current directory set to its
@@ -67,7 +67,7 @@ source_suffix = ".rst"
 master_doc = "index"
 
 # General information about the project.
-project = "missle-tid"
+project = "missile-tid"
 copyright = "2021, ACWC"
 author = "ACWC"
 
@@ -164,7 +164,7 @@ latex_documents = [
     (
         master_doc,
         "tid.tex",
-        "missle-tid Documentation",
+        "missile-tid Documentation",
         "Contributors",
         "manual",
     ),
@@ -179,7 +179,7 @@ man_pages = [
     (
         master_doc,
         "tid",
-        "missle-tid Documentation",
+        "missile-tid Documentation",
         [author],
         1,
     )
@@ -195,7 +195,7 @@ texinfo_documents = [
     (
         master_doc,
         "tid",
-        "missle-tid Documentation",
+        "missile-tid Documentation",
         author,
         "tid",
         "Ionospheric measurements from GPS to detect launches.",
