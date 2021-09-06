@@ -24,6 +24,7 @@ from tid.config import Configuration
 from tid.connections import Connection, ConnTickMap
 from tid import dense_data, get_data, tec
 
+from tid.util import get_dates_in_range as _get_dates_in_range
 
 # load configuration data
 conf = Configuration()
@@ -31,27 +32,6 @@ conf = Configuration()
 MIN_CON_LENGTH = 20  # 10 minutes worth of connection
 DISCON_TIME = 4  # cycle slip for >= 4 samples without info
 EL_CUTOFF = 0.25  # elevation cutoff in radians, shallower than this ignored
-
-
-def _get_dates_in_range(
-    start_date: datetime, duration: timedelta
-) -> Iterable[datetime]:
-    """
-    Get a list of dates, starting with start_date, each 1 day apart
-
-    Args:
-        start_date: the first date to include
-        duration: how long to include
-
-    Returns:
-        list of dates, each separated by 1 day
-    """
-    dates = [start_date]
-    last_date = start_date + timedelta(days=1)
-    while last_date < dates[0] + duration:
-        dates.append(last_date)
-        last_date += timedelta(days=1)
-    return dates
 
 
 def _correct_satellite_info(dog, prn, data: numpy.array) -> None:
