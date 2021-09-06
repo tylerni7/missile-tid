@@ -41,8 +41,10 @@ def _correct_satellite_info(dog, prn, data: numpy.array) -> None:
     Args:
         data: the observables data to correct for one satellite
     """
+    # TODO handle (rare) wrap-around case where correction pushes us back a week!
     adj_sec = data["recv_time_sec"] - data["C1C"] / constants.SPEED_OF_LIGHT
     for i, entry in enumerate(data):
+
         time_of_interest = GPSTime(week=int(entry["recv_time_week"]), tow=adj_sec[i])
         sat_info = dog.get_sat_info(prn, time_of_interest)
         # laika doesn't fall back to less-accurate NAV data if SP3 data is unavailable
@@ -63,7 +65,10 @@ def _correct_satellite_info(dog, prn, data: numpy.array) -> None:
 
 
 def _populate_data(
-    stations, date_list, dog
+    stations: Iterable[str],
+    start_date: datetime,
+    date_list: Iterable[datetime],
+    dog: AstroDog,
 ) -> Tuple[Dict[str, Iterable[float]], Dict[str, Dict[str, numpy.array]]]:
     """
     Download/populate the station data and station location info
@@ -75,6 +80,8 @@ def _populate_data(
     station_locs: Dict[str, Iterable[float]] = {}
     # dict of station names -> dict of prn -> numpy observation data
     station_data: Dict[str, Dict[str, numpy.array]] = {}
+
+    gps_start = GPSTime.from_datetime(start_date)
 
     for station in stations:
         for date in date_list:
@@ -97,6 +104,11 @@ def _populate_data(
 
         for prn, obs_data in station_data[station].items():
             _correct_satellite_info(dog, prn, obs_data)
+            obs_data["tick"] = (
+                (obs_data["recv_time_sec"] - gps_start.tow)
+                + (obs_data["recv_time_week"] - gps_start.week)
+                * gps_start.seconds_in_week
+            ) // 30
     return station_locs, station_data
 
 
@@ -196,8 +208,9 @@ class Scenario:
 
         date_list = _get_dates_in_range(start_date, duration)
         stations = set(stations)
-        locs, data = _populate_data(stations, date_list, dog)
+        locs, data = _populate_data(stations, start_date, date_list, dog)
         sc = cls(start_date, duration, locs, data, dog)
+
         if use_cache:
             cache_path.parent.mkdir(exist_ok=True)
             sc.to_hdf5(cache_path, mode="w")
