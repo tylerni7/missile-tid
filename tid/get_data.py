@@ -20,7 +20,7 @@ from laika.gps_time import GPSTime
 from laika.raw_gnss import GNSSMeasurement
 from laika.rinex_file import RINEXFile, DownloadError
 
-from tid import util
+from tid import types, util
 
 
 LOG = logging.getLogger(__name__)
@@ -163,7 +163,7 @@ def _download_korean_station(
         "corsId": station_name.upper(),
         "obsStDay": start_day,
         "obsEdDay": start_day,
-        "dataTyp": 30,
+        "dataTyp": util.DATA_RATE,
     }
     res = requests.post(json_url, data=postdata).text
     if not res:
@@ -239,7 +239,9 @@ def rinex_file_for_station(
     return rinex_obs_file
 
 
-def location_for_station(dog: AstroDog, time: GPSTime, station_name: str) -> Sequence:
+def location_for_station(
+    dog: AstroDog, time: GPSTime, station_name: str
+) -> types.ECEF_XYZ:
     """
     Get location for a particular station at a particular time.
     Time is needed so we can look at RINEX files and sanity check
@@ -306,5 +308,5 @@ def data_for_station(
     if rinex_obs_file is None:
         raise DownloadError
 
-    obs_data = RINEXFile(rinex_obs_file, rate=30)
+    obs_data = RINEXFile(rinex_obs_file, rate=util.DATA_RATE)
     return raw_gnss.read_rinex_obs(obs_data)

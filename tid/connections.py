@@ -5,11 +5,11 @@ Things to manage those are stored here
 """
 from __future__ import annotations  # defer type annotations due to circular stuff
 from functools import cached_property
-from typing import TYPE_CHECKING, Iterable, Tuple
+from typing import TYPE_CHECKING, Iterable, Tuple, Union
 
 import numpy
 
-from tid import tec, util
+from tid import tec, types, util
 
 # deal with circular type definitions for Scenario
 if TYPE_CHECKING:
@@ -65,6 +65,31 @@ class Connection:
         self.offset = None  # this value has units of Meters
         self.offset_error = None
 
+    @property
+    def is_glonass(self) -> bool:
+        """
+        Is this a GLONASS satellite?
+
+        Returns:
+            boolean indicating glonass or not
+        """
+        return self.prn.startswith("R")
+
+    @cached_property
+    def glonass_chan(self) -> int:
+        """
+        The channel that GLONASS is using.
+
+        Returns:
+            the integer channel GLONASS is using, or 0 if it is not using GLONASS
+        """
+        if not self.is_glonass:
+            return 0
+        chan = self.scenario.get_glonass_chan(self.prn, self.observations)
+        # can't have gotten None, or we'd not have gotten it in our connection
+        assert chan is not None
+        return chan
+
     @cached_property
     def frequencies(self) -> Tuple[float, float]:
         """
@@ -79,19 +104,19 @@ class Connection:
         """
         The channel2 name "C2C" or "C2P" associated with this connection's data
         """
-        chan2 = util.channel2(self.observations)
+        chan2 = util.channel2(self.station, self.prn, self.observations)
         assert chan2, "Unknown channel2 data INSIDE connection object"
         return chan2
 
     @property
-    def ticks(self) -> Iterable[int]:
+    def ticks(self) -> numpy.ndarray:
         """
-        Iterator of ticks from tick0 to tickn (inclusive), for convenience
+        Numpy array of ticks from tick0 to tickn (inclusive), for convenience
         """
-        return range(self.tick0, self.tickn + 1)
+        return numpy.arange(self.tick0, self.tickn + 1)
 
     @property
-    def observations(self) -> numpy.array:
+    def observations(self) -> types.DenseDataType:
         """
         Convenience function: returns the numpy arrays for the raw observations
         corresponding to this connection
@@ -101,6 +126,21 @@ class Connection:
         return self.scenario.station_data[self.station][self.prn][
             self.tick0 : self.tickn + 1
         ]
+
+    def elevation(
+        self, sat_pos: Union[types.ECEF_XYZ, types.ECEF_XYZ_LIST]
+    ) -> Union[types.ECEF_XYZ, types.ECEF_XYZ_LIST]:
+        """
+        Convenience wrapper around scenario.station_el, but specifically
+        for the station that this connection uses.
+
+        sat_pos: numpy array of XYZ ECEF satellite positions in meters
+            must have shape (?, 3)
+
+        Returns:
+            elevation in radians (will have same length as sat_pos)
+        """
+        return self.scenario.station_el(self.station, sat_pos)
 
     def __contains__(self, tick: int) -> bool:
         """
@@ -122,19 +162,16 @@ class Connection:
         This is the simplest method: use the average difference between
         the code and carrier phases.
         """
-        chan2 = util.channel2(self.observations)
-        frequencies = self.scenario.get_frequencies(self.prn, self.observations)
-        # can't do anything without frequencies, use NaN to indicate failure later on
-        if not frequencies:
-            self.offset = numpy.nan
-            return
+        chan2 = self.channel2
 
-        f1, f2 = frequencies
+        f1, f2 = self.frequencies
+        # sign reversal here is correct: ionospheric effect is opposite for code phase
         code_phase_diffs = self.observations[chan2] - self.observations["C1C"]
         carrier_phase_diffs = tec.C * (
             self.observations["L1C"] / f1 - self.observations["L2C"] / f2
         )
         difference = code_phase_diffs - carrier_phase_diffs
+        assert abs(numpy.mean(difference)) < 100
         self.offset = numpy.mean(difference)
         self.offset_error = numpy.std(difference)
 
@@ -165,6 +202,32 @@ class Connection:
             return self.offset
 
         assert False, "carrier correction attempted with no correction mechanism"
+
+    @property
+    def ipps(self) -> types.ECEF_XYZ_LIST:
+        """
+        The locations where the signals associated with this connection
+        penetrate the ionosphere.
+
+        Returns:
+            numpy array of XYZ ECEF coordinates in meters of the IPPs
+        """
+        return tec.ion_locs(
+            self.scenario.station_locs[self.station], self.observations["sat_pos"]
+        )
+
+    @property
+    def vtecs(self) -> numpy.ndarray:
+        """
+        The vtec values associated with this connection
+
+        Returns:
+            numpy array of (
+                vtec value in TECu,
+                unitless slant_to_vertical factor
+            )
+        """
+        return tec.calculate_vtecs(self)
 
 
 class ConnTickMap:

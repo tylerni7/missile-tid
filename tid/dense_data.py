@@ -4,17 +4,17 @@ This file has wrappers/helpers/definitions for a more
 space efficient format based on numpy
 """
 
-from typing import Dict, Sequence
+from typing import Dict, List, Sequence
 import numpy
 
 from laika import AstroDog
 from laika.gps_time import GPSTime
 from laika.raw_gnss import GNSSMeasurement
 
-from tid import get_data
+from tid import get_data, types
 
 # dict of prn -> numpy.array(dtype=DENSE_TYPE)
-DenseMeasurements = Dict[str, numpy.array]
+DenseMeasurements = Dict[str, types.DenseDataType]
 
 DENSE_TYPE = [
     #    ("station", "U4"),  # name of the ground station
@@ -100,20 +100,21 @@ def from_raw_obs(
     Returns:
         a dictionary mapping station names to numpy arrays of our "dense measurements"
     """
-    sv_dict: Dict[str, numpy.array] = {}
+    sv_dict_tmp: Dict[str, List] = {}
+    sv_dict_out: Dict[str, types.DenseDataType] = {}
 
     # use python lists to build up data struct, because they're faster to modify
     for sat_obs in raw_obs:
         for obs in sat_obs:
-            if obs.prn not in sv_dict:
-                sv_dict[obs.prn] = []
-            sv_dict[obs.prn].append(_meas_to_tuple(obs, station_name))
+            if obs.prn not in sv_dict_tmp:
+                sv_dict_tmp[obs.prn] = []
+            sv_dict_tmp[obs.prn].append(_meas_to_tuple(obs, station_name))
 
     # convert the python lists into numpy arrays to save a bit of memory
-    for key in sv_dict:
-        sv_dict[key] = numpy.array(sv_dict[key], dtype=DENSE_TYPE)
+    for key in sv_dict_tmp:
+        sv_dict_out[key] = numpy.array(sv_dict_tmp[key], dtype=DENSE_TYPE)
 
-    return sv_dict
+    return sv_dict_out
 
 
 def dense_data_for_station(

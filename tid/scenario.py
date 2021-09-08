@@ -7,7 +7,7 @@ from __future__ import annotations  # defer type annotations due to circular stu
 
 from datetime import datetime, timedelta
 from functools import lru_cache
-from typing import Dict, Iterable, Optional, Tuple
+from typing import Dict, Iterable, Optional, Tuple, Union
 from pathlib import Path
 import hashlib
 
@@ -22,7 +22,7 @@ from laika.rinex_file import DownloadError
 
 from tid.config import Configuration
 from tid.connections import Connection, ConnTickMap
-from tid import dense_data, get_data, tec
+from tid import bias_solve, dense_data, get_data, tec, types, util
 
 from tid.util import get_dates_in_range as _get_dates_in_range
 
@@ -124,8 +124,8 @@ class Scenario:
         self,
         start_date: datetime,
         duration: timedelta,
-        station_locs: Dict[str, Iterable[float]],
-        station_data: Dict[str, Dict[str, numpy.array]],
+        station_locs: Dict[str, types.ECEF_XYZ],
+        station_data: Dict[str, Dict[str, types.DenseDataType]],
         dog: AstroDog,
         conn_map=None,
     ) -> None:
@@ -135,15 +135,14 @@ class Scenario:
         self.date_list = _get_dates_in_range(start_date, duration)
         self.duration = duration
 
-        self.stations = set(station_data)
-
-        self.station_locs = station_locs
-        self.station_data = station_data
+        self.station_locs: Dict[str, types.ECEF_XYZ] = {}
+        self.station_data: Dict[str, Dict[str, types.DenseDataType]] = {}
 
         self.conn_map = conn_map
 
         # biases to be calculated of prn or station to clock bias in meters (C*time)
         # by some weird convention I don't get, these have opposite signs applied to them
+        self.bias_solver: Optional[bias_solve.BiasSolver] = None
         self.sat_biases: Dict[str, float] = {}
         self.rcvr_biases: Dict[str, float] = {}
 
@@ -239,17 +238,20 @@ class Scenario:
         """
         return coordinates.LocalCoord.from_ecef(self.station_locs[station])
 
-    def station_el(self, station, sat_pos) -> float:
+    def station_el(
+        self, station: str, sat_pos: Union[types.ECEF_XYZ, types.ECEF_XYZ_LIST]
+    ) -> numpy.ndarray:
         """
         Helper to get elevations of satellite looks more efficiently.
         This re-uses the station converters which helps performance
 
         Args:
             station: station name
-            sat_pos: the XYZ ECEF satellite position in meters
+            sat_pos: numpy array of XYZ ECEF satellite positions in meters
+                must have shape (?, 3)
 
         Returns:
-            elevation in radians
+            elevation in radians (will have same length as sat_pos)
         """
         sat_ned = self._station_converter(station).ecef2ned(sat_pos)
         sat_range = numpy.linalg.norm(sat_ned, axis=1)
@@ -258,14 +260,39 @@ class Scenario:
     def get_vtec_data(self):
         pass
 
+    def get_glonass_chan(
+        self, prn: str, observations: types.DenseDataType
+    ) -> Optional[int]:
+        """
+        Get the GLONASS channel for this satellite for these observations
+
+
+        Args:
+            prn: the prn of interest
+            observations: observations from which to get the time info
+
+        Returns:
+            the integer channel on which this satellite is operating, or none if it
+            could not be found
+        """
+        time = GPSTime(
+            week=int(observations[0]["recv_time_week"]),
+            tow=observations[0]["recv_time_sec"],
+        )
+        return self.dog.get_glonass_channel(prn, time)
+
     def get_frequencies(
-        self, prn, observations: numpy.array
+        self, prn: str, observations: types.DenseDataType
     ) -> Optional[Tuple[float, float]]:
         """
         Get the channel 1 and 2 frequencies corresponding to the given observations
 
         Args:
-            observations: observations containing time and PRN information
+            prn: the prn of interest
+            observations: observations from which to get the time info
+
+        Returns:
+            the channel 1 and 2 frequencies in Hz, or None if they could not be found
         """
         time = GPSTime(
             week=int(observations[0]["recv_time_week"]),
@@ -278,7 +305,11 @@ class Scenario:
         return f1, f2
 
     def _get_connections_internal(
-        self, station, prn, observations: numpy.array, el_cutoff: float = EL_CUTOFF
+        self,
+        station,
+        prn,
+        observations: types.DenseDataType,
+        el_cutoff: float = EL_CUTOFF,
     ) -> Iterable[Connection]:
         """
         Get a list of Connections given observations
@@ -295,8 +326,13 @@ class Scenario:
         # first pass: when tickcount jumps by >= DISCON_TIME
         bkpoints |= set(numpy.where(numpy.diff(observations["tick"]) >= DISCON_TIME)[0])
 
+        try:
+            chan2 = util.channel2(station, prn, observations)
+        except LookupError:
+            # without a channel 2, not much to be doing
+            return []
         mw_signal = tec.melbourne_wubbena(
-            self.get_frequencies(prn, observations), observations
+            self.get_frequencies(prn, observations), chan2, observations
         )
         # if this calculation failed, we don't have proper dual channel info anyway
         if mw_signal is None:
@@ -379,3 +415,8 @@ class Scenario:
                 for con in cons:
                     con.correct_ambiguities()
                 self.conn_map[station][prn] = ConnTickMap(cons)
+
+    def solve_biases(self):
+        assert self.conn_map
+        self.bias_solver = bias_solve.SimpleBiasSolver(self)
+        return self.bias_solver.solve_biases()

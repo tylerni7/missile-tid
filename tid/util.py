@@ -3,12 +3,15 @@ Generic utility functions that help make life easier when dealing with data
 Should be mostly short wrapper functions
 """
 from datetime import datetime, timedelta
-from typing import Optional, Sequence, Iterable
+from typing import Dict, Optional, Sequence, Iterable, Tuple
 import numpy
 
 from laika.gps_time import GPSTime
 from laika.lib import coordinates
 
+from tid import types
+
+DATA_RATE = 30  # how many seconds / measurement
 DAYS = timedelta(days=1)
 
 
@@ -40,13 +43,24 @@ def datetime_fromstr(timestr: str) -> GPSTime:
     return datetime.strptime(timestr, "%Y-%m-%d")
 
 
-def channel2(observations: numpy.array) -> str:
+"""
+cache channel2 lookups:
+    we need to be consistent about what "channel2" means, because
+    if we swap back and forth for a set of data, we might start
+    having NaNs show up!
+"""
+channel2_cache: Dict[Tuple[str, str], str] = {}
+
+
+def channel2(station: str, prn: str, observations: types.DenseDataType) -> str:
     """
     Frequently we want to know if the channel 2 code phase data
     is from C2C or C2P. This function wraps that (simple) logic
     to keep things cleaner
 
     Args:
+        station: the station of interest
+        prn: the prn of interest
         observations: the numpy array of dense observations
 
     Returns:
@@ -56,6 +70,9 @@ def channel2(observations: numpy.array) -> str:
         LookupError if neither of those signals is available
     """
     # default channel 2 code phase signal
+    lookup = channel2_cache.get((station, prn))
+    if lookup is not None:
+        return lookup
     chan2 = "C2C"
     if numpy.isnan(observations[0]["C2C"]):
         # less reliable channel 2 code phase signal
@@ -63,6 +80,8 @@ def channel2(observations: numpy.array) -> str:
         if numpy.isnan(observations[0]["C2P"]):
             # if we don't have that, we're done
             raise LookupError
+
+    channel2_cache[(station, prn)] = chan2
     return chan2
 
 
@@ -87,7 +106,7 @@ def station_location_from_rinex(rinex_path: str) -> Optional[Sequence]:
         for _ in range(50):
             linedat = filedat.readline()
             if b"POSITION XYZ" in linedat:
-                xyz = [float(x) for x in linedat.split()[:3]]
+                xyz = numpy.array([float(x) for x in linedat.split()[:3]])
             elif b"Monument location:" in linedat:
                 lat, lon, height = [float(x) for x in linedat.split()[2:5]]
             elif b"(latitude)" in linedat:

@@ -2,6 +2,7 @@
 
 Reads shared config and makes object available for use by other modules
 """
+import logging
 import os
 import os.path
 import yaml
@@ -22,15 +23,22 @@ class Configuration:
 
     def __init__(self, config_file: str = default_config) -> None:
         """
-        Parameters
-        ----------
-        config_file : str or
+        Args:
+            config_file : str of the path of the config file
         """
         self.config_file = config_file
 
         with open(self.config_file, encoding="utf-8") as fname:
             self.conf = yaml.safe_load(fname)
             self.cache_dir = os.path.expanduser(self.conf["cache_dir"])
+            self.logging = self.conf.get("logging", {})
+            self.log_level = self.logging.get("level", logging.WARNING)
+            logging.basicConfig(
+                level=self.log_level,
+                format="%(asctime)s [%(filename)s:%(lineno)d][%(levelname)s] %(message)s",
+                datefmt=self.logging.get("datefmt", "%Y-%m-%d %H:%M:%S"),
+            )
+            self.logger = logging.getLogger("tid")
 
 
 def set_global_config(config: Configuration) -> None:
