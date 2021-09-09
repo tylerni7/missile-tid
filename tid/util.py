@@ -70,6 +70,11 @@ def channel2(station: str, prn: str, observations: types.DenseDataType) -> str:
         LookupError if neither of those signals is available
     """
     # default channel 2 code phase signal
+    if numpy.isnan(observations[0]["C2C"]):
+        raise LookupError
+
+    return "C2C"
+
     lookup = channel2_cache.get((station, prn))
     if lookup is not None:
         return lookup

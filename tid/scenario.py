@@ -258,7 +258,19 @@ class Scenario:
         return numpy.arcsin(-sat_ned[..., 2] / sat_range)
 
     def get_vtec_data(self):
-        pass
+        vtecs = {}
+        ipps = {}
+        for station in self.conn_map.keys():
+            for prn in self.conn_map[station].keys():
+                if not self.conn_map[station][prn].connections:
+                    continue
+                if station not in vtecs:
+                    vtecs[station] = {}
+                if station not in ipps:
+                    ipps[station] = {}
+                vtecs[station][prn] = self.conn_map[station][prn].get_vtecs()
+                ipps[station][prn] = self.conn_map[station][prn].get_ipps_latlon()
+        return vtecs, ipps
 
     def get_glonass_chan(
         self, prn: str, observations: types.DenseDataType
@@ -419,4 +431,4 @@ class Scenario:
     def solve_biases(self):
         assert self.conn_map
         self.bias_solver = bias_solve.SimpleBiasSolver(self)
-        return self.bias_solver.solve_biases()
+        self.sat_biases, self.rcvr_biases = self.bias_solver.solve_biases()

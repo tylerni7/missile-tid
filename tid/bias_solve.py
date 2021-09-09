@@ -36,8 +36,8 @@ if TYPE_CHECKING:
     from tid.scenario import Scenario
     from tid.connections import Connection
 
-LAT_RES = 1  # 1 degrees
-LON_RES = 1  # 1 degrees
+LAT_RES = 2.5  # 1 degrees
+LON_RES = 5  # 1 degrees
 TIME_RES = 60 * 15  # 15 minutes
 
 
@@ -64,20 +64,7 @@ class SimpleBiasSolver(BiasSolver):
         self.stations = sorted(self.scenario.stations)
         self.sats = sorted(list(self._get_sats()))
 
-        # pre-calculate some values to use for calculating indices in our matrix
-        (
-            self.smallest_lat,
-            self.biggest_lat,
-            self.smallest_lon,
-            self.biggest_lon,
-        ) = self._get_geographic_extent()
-        self.coord_width = (self.biggest_lon - self.smallest_lon) / LON_RES
-        self.coord_block_size = int(
-            self.coord_width * (self.biggest_lat - self.smallest_lat) / LAT_RES
-        )
-        self.total_tec_values = int(
-            self.coord_block_size * self.scenario.duration.total_seconds() / TIME_RES
-        )
+        self.total_tec_values = 0
 
         # for LSQ: we will minimize Ax - b
         # this matrix represents the unknowns for all our observations
@@ -169,33 +156,6 @@ class SimpleBiasSolver(BiasSolver):
         idx = self.total_tec_values + len(self.sats) + 2 * self.stations.index(station)
         return idx, idx + 1
 
-    def _get_geographic_extent(self) -> Tuple[float, float, float, float]:
-        """
-        Get rectangluar bounds on the region of interest, based on the locations
-        of all the stations in the scenario, with a border of 5 degrees
-
-        Returns:
-            smallest_lat, biggest_lat, smallest_lon, biggest_lon in degrees
-        """
-        smallest_lat = numpy.inf
-        biggest_lat = -numpy.inf
-        smallest_lon = numpy.inf
-        biggest_lon = -numpy.inf
-
-        for station_loc in self.scenario.station_locs.values():
-            lat, lon, _ = coordinates.ecef2geodetic(station_loc)
-            smallest_lat = min(smallest_lat, lat)
-            smallest_lon = min(smallest_lon, lon)
-            biggest_lat = max(biggest_lat, lat)
-            biggest_lon = max(biggest_lon, lon)
-
-        return (
-            numpy.floor(smallest_lat - 5),
-            numpy.ceil(biggest_lat + 5),
-            numpy.floor(smallest_lon - 5),
-            numpy.ceil(biggest_lon + 5),
-        )
-
     def _get_sats(self) -> Iterable[str]:
         """
         Return all the PRNs seen by all stations across all observations
@@ -207,63 +167,6 @@ class SimpleBiasSolver(BiasSolver):
         for station_dict in self.scenario.station_data.values():
             sats |= set(station_dict.keys())
         return sats
-
-    def add_connection2(self, connection: Connection) -> None:
-        """
-        Add the data from the given connection to the matrices for the LSQ bias calculation
-
-        Args:
-            connection: the connection whose data we wish to add
-        """
-        # round time (ticks) to the desired amount
-        tick_scale_factor = TIME_RES / DATA_RATE
-        rounded_ticks = (
-            numpy.round(connection.ticks / tick_scale_factor, 0) * tick_scale_factor
-        )
-
-        # round lat and lon to the desired amount
-        ll_scale_factor = numpy.array([LAT_RES, LON_RES])
-        scaled_lat_lons = (
-            coordinates.ecef2geodetic(connection.ipps)[..., 0:2] / ll_scale_factor
-        )
-        rounded_lat_lons = numpy.round(scaled_lat_lons, 0) * ll_scale_factor
-
-        sat_bias_idx = self.sat_bias_col_idx(connection.prn)
-        rcvr_bias_idx, rcvr_glonass_bias_idx = self.rcvr_bias_col_idx(
-            connection.station
-        )
-        # if this isn't a glonass connection, we don't need to worry about the
-        # first-order frequency correction, as only GLONASS is FDMA
-        if not connection.is_glonass:
-            rcvr_glonass_bias_idx = None
-
-        for tick, (lat, lon), (vtec, slant) in zip(
-            rounded_ticks, rounded_lat_lons, connection.vtecs.T
-        ):
-            # if the value is outside our pre-sized box, skip it
-            if (
-                not self.smallest_lat <= lat <= self.biggest_lat
-                and self.smallest_lon <= lon <= self.biggest_lon
-            ):
-                continue
-            # vtec = true_tec + slant(sat_bias + recv_bias + glonass_chan*recv_glonass_bias)
-            self.b_values.append(vtec)
-            true_tec_idx = self.tec_col_idx(lat, lon, tick)
-            # set up this row of the A matrix
-
-            # TODO : we end up adding lots of rows that aren't really useful info--just the same PRN and STATION with the same TEC
-            # what if we coalesce those values?
-            self.mat_insert(self.measurements, true_tec_idx, 1)
-            self.mat_insert(self.measurements, sat_bias_idx, -slant)
-            self.mat_insert(self.measurements, rcvr_bias_idx, slant)
-            if rcvr_glonass_bias_idx is not None:
-                self.mat_insert(
-                    self.measurements,
-                    rcvr_glonass_bias_idx,
-                    connection.glonass_chan * slant,
-                )
-            # increment row counter
-            self.measurements += 1
 
     def add_connection(self, connection: Connection) -> None:
         """
@@ -285,68 +188,57 @@ class SimpleBiasSolver(BiasSolver):
         )
         rounded_lat_lons = numpy.round(scaled_lat_lons, 0) * ll_scale_factor
 
-        # if this isn't a glonass connection, we don't need to worry about the
-        # first-order frequency correction, as only GLONASS is FDMA
-        if not connection.is_glonass:
-            rcvr_glonass_bias_idx = None
-
         holding_cell = {}
         for tick, (lat, lon), (vtec, slant) in zip(
             rounded_ticks, rounded_lat_lons, connection.vtecs.T
         ):
-            # if the value is outside our pre-sized box, skip it
-            if (
-                not self.smallest_lat <= lat <= self.biggest_lat
-                and self.smallest_lon <= lon <= self.biggest_lon
-            ):
-                continue
             # stec = true_tec / slant + sat_bias + recv_bias + glonass_chan*recv_glonass_bias
             # vtec = true_tec + slant(sat_bias + recv_bias + glonass_chan*recv_glonass_bias)
-            true_tec_idx = self.tec_col_idx(lat, lon, tick)
-            if true_tec_idx not in holding_cell:
-                holding_cell[true_tec_idx] = []
-            holding_cell[true_tec_idx].append((vtec, slant))
+            tec_loc = (lat, lon, tick)
+            if tec_loc not in holding_cell:
+                holding_cell[tec_loc] = []
+            holding_cell[tec_loc].append((vtec, slant))
             # set up this row of the A matrix
 
         sat_idx = self.sats.index(connection.prn)
         station_idx = self.stations.index(connection.station)
-        for true_tec_idx, hits in holding_cell.items():
+        for tec_loc, hits in holding_cell.items():
             vtec_total = sum(hit[0] for hit in hits)
             slant_total = sum(hit[1] for hit in hits)
             self.entries.append(
                 (
                     vtec_total,
-                    true_tec_idx,
+                    tec_loc,
                     len(hits),
                     sat_idx,
                     station_idx,
                     slant_total,
-                    connection.glonass_chan,
+                    connection.glonass_chan if connection.is_glonass else None,
                 )
             )
 
     def coalesce_entries(self):
-        # first find which true_tec_idxs were used
+        # first find which tec_locs were used
         counts = Counter(entry[1] for entry in self.entries)
         tec_id_map = {}
         idx = 0
-        for tec_idx, count in counts.items():
+        for tec_loc, count in counts.items():
             if count > 1:
-                tec_id_map[tec_idx] = idx
+                tec_id_map[tec_loc] = idx
                 idx += 1
         self.total_tec_values = len(tec_id_map)
 
         for entry in self.entries:
             (
                 vtec_total,
-                true_tec_idx,
+                tec_loc,
                 hit_cnt,
                 sat_idx,
                 station_idx,
                 slant_total,
                 glonass_chan,
             ) = entry
-            tec_idx = tec_id_map.get(true_tec_idx)
+            tec_idx = tec_id_map.get(tec_loc)
             if tec_idx is None:
                 continue
             self.b_values.append(vtec_total)
@@ -394,4 +286,16 @@ class SimpleBiasSolver(BiasSolver):
                 for connection in conn_tick_map.connections:
                     self.add_connection(connection)
         self.coalesce_entries()
-        return self.lsq_bias_solve()
+        res = self.lsq_bias_solve()
+
+        sat_biases = dict(
+            zip(
+                self.sats,
+                res.x[self.total_tec_values : self.total_tec_values + len(self.sats)],
+            )
+        )
+        remaining = res.x[self.total_tec_values + len(self.sats) :]
+        station_biases = dict(
+            zip(self.stations, numpy.array(remaining).reshape((len(remaining) // 3, 3)))
+        )
+        return sat_biases, station_biases

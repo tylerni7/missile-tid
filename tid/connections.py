@@ -5,9 +5,11 @@ Things to manage those are stored here
 """
 from __future__ import annotations  # defer type annotations due to circular stuff
 from functools import cached_property
-from typing import TYPE_CHECKING, Iterable, Tuple, Union
+from typing import TYPE_CHECKING, Any, Iterable, Sequence, Tuple, Union
 
 import numpy
+
+from laika.lib import coordinates
 
 from tid import tec, types, util
 
@@ -171,7 +173,7 @@ class Connection:
             self.observations["L1C"] / f1 - self.observations["L2C"] / f2
         )
         difference = code_phase_diffs - carrier_phase_diffs
-        assert abs(numpy.mean(difference)) < 100
+        # assert abs(numpy.mean(difference)) < 100
         self.offset = numpy.mean(difference)
         self.offset_error = numpy.std(difference)
 
@@ -230,6 +232,29 @@ class Connection:
         return tec.calculate_vtecs(self)
 
 
+class SparseList:
+    """
+    Helper to represent data from connections where we may be missing stuff
+    Don't store all those 0s!
+    """
+
+    def __init__(
+        self,
+        index_ranges: Iterable[Tuple[int, int]],
+        data: Iterable[Sequence],
+        default=0.0,
+    ):
+        self.ranges = index_ranges
+        self.data = data
+        self.default = default
+
+    def __getitem__(self, tick: int):
+        for data_range, datum in zip(self.ranges, self.data):
+            if data_range[0] <= tick <= data_range[1]:
+                return datum[tick - data_range[0]]
+        return self.default
+
+
 class ConnTickMap:
     """
     Simple helper class to efficiently convert a tick number back
@@ -239,7 +264,7 @@ class ConnTickMap:
     def __init__(self, connections: Iterable[Connection]) -> None:
         self.connections = connections
 
-    def __getitem__(self, tick: int):
+    def __getitem__(self, tick: int) -> Connection:
         """
         Get the tick for this tick
 
@@ -252,3 +277,23 @@ class ConnTickMap:
             if tick in con:
                 return con
         raise KeyError
+
+    def get_vtecs(self):
+        return SparseList(
+            [(con.tick0, con.tickn) for con in self.connections],
+            [con.vtecs for con in self.connections],
+        )
+
+    def get_ipps(self):
+        return SparseList(
+            [(con.tick0, con.tickn) for con in self.connections],
+            [con.ipps for con in self.connections],
+            default=None,
+        )
+
+    def get_ipps_latlon(self):
+        return SparseList(
+            [(con.tick0, con.tickn) for con in self.connections],
+            [coordinates.ecef2geodetic(con.ipps)[..., 0:2] for con in self.connections],
+            default=None,
+        )

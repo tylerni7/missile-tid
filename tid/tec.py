@@ -86,8 +86,18 @@ def calc_carrier_delays(connection: Connection) -> numpy.ndarray:
     """
 
     sat_bias = connection.scenario.sat_biases.get(connection.prn, 0)
-    station_bias = connection.scenario.rcvr_biases.get(connection.station, 0)
+    station_bias_vector = connection.scenario.rcvr_biases.get(
+        connection.station, (0, 0, 0)
+    )
     f1, f2 = connection.frequencies
+
+    # glonass station bias has a channel dependence
+    if connection.is_glonass:
+        station_bias = (
+            station_bias_vector[1] + connection.glonass_chan * station_bias_vector[2]
+        )
+    else:
+        station_bias = station_bias_vector[0]
 
     raw_phase_difference_meters = C * (
         connection.observations["L1C"] / f1 - connection.observations["L2C"] / f2
