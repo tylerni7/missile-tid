@@ -28,26 +28,20 @@ DENSE_TYPE = [
     ("L2C", "f8"),
     ("L5C", "f8"),
     # second and week, allowing reconstruction of GPS timestamp
-    (
-        "recv_time_sec",
-        "f4",
-    ),
+    ("recv_time_sec", "f4"),
     ("recv_time_week", "i4"),
     ("sat_clock_err", "f8"),  # clock error in seconds
     # TODO: this is the same for every station, can we store once and just keep final pos?
     ("sat_pos", "3f8"),  # satellite position XYZ ECEF in meters
     ("sat_vel", "3f8"),  # satellite velocity XYZ ECEF in meters/second
     # satellite position in XYZ ECEF in meters after corrections
-    (
-        "sat_pos_final",
-        "3f8",
-    ),
+    ("sat_pos_final", "3f8"),
     ("is_processed", "?"),  # boolean for initial processing
     ("is_corrected", "?"),  # boolean for final positions being calculated
 ]
 
 
-def _meas_to_tuple(raw_meas: GNSSMeasurement, station_name: str, tick: int) -> tuple:
+def _meas_to_tuple(raw_meas: GNSSMeasurement, station_name: str) -> tuple:
     """
     Given a raw Laika GNSSMeasurement into a tuple to be used by our numpy struct
 
@@ -62,7 +56,7 @@ def _meas_to_tuple(raw_meas: GNSSMeasurement, station_name: str, tick: int) -> t
     return (
         #        station_name,
         #        raw_meas.prn,
-        tick,
+        0,
         raw_meas.observables.get("C1C", numpy.nan),
         raw_meas.observables.get("C2C", numpy.nan),
         raw_meas.observables.get("C2P", numpy.nan),
@@ -109,11 +103,11 @@ def from_raw_obs(
     sv_dict: Dict[str, numpy.array] = {}
 
     # use python lists to build up data struct, because they're faster to modify
-    for tick, sat_obs in enumerate(raw_obs):
+    for sat_obs in raw_obs:
         for obs in sat_obs:
             if obs.prn not in sv_dict:
                 sv_dict[obs.prn] = []
-            sv_dict[obs.prn].append(_meas_to_tuple(obs, station_name, tick))
+            sv_dict[obs.prn].append(_meas_to_tuple(obs, station_name))
 
     # convert the python lists into numpy arrays to save a bit of memory
     for key in sv_dict:

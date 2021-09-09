@@ -3,7 +3,7 @@ Generic utility functions that help make life easier when dealing with data
 Should be mostly short wrapper functions
 """
 from datetime import datetime, timedelta
-from typing import Optional, Sequence
+from typing import Optional, Sequence, Iterable
 import numpy
 
 from laika.gps_time import GPSTime
@@ -103,3 +103,24 @@ def station_location_from_rinex(rinex_path: str) -> Optional[Sequence]:
             if xyz is not None:
                 return xyz
     return None
+
+
+def get_dates_in_range(start_date: datetime, duration: timedelta) -> Iterable[datetime]:
+    """
+    Get a list of dates, starting with start_date, each 1 day apart
+
+    Args:
+        start_date: the first date to include
+        duration: how long to include
+
+    Returns:
+        list of dates, each separated by 1 day
+    """
+    first_day = start_date.replace(hour=0, minute=0)
+    dates = [first_day]
+    last_date = first_day + timedelta(days=1)
+    deadline = start_date + duration
+    while last_date < deadline:
+        dates.append(last_date)
+        last_date += timedelta(days=1)
+    return dates

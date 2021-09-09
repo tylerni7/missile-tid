@@ -8,9 +8,12 @@ from __future__ import annotations  # defer type annotations due to circular stu
 from datetime import datetime, timedelta
 from functools import lru_cache
 from typing import Dict, Iterable, Optional, Tuple
+from pathlib import Path
+import hashlib
 
 import ruptures
 import numpy
+import h5py
 
 from laika import AstroDog, constants
 from laika.gps_time import GPSTime
@@ -21,6 +24,7 @@ from tid.config import Configuration
 from tid.connections import Connection, ConnTickMap
 from tid import dense_data, get_data, tec
 
+from tid.util import get_dates_in_range as _get_dates_in_range
 
 # load configuration data
 conf = Configuration()
@@ -30,23 +34,82 @@ DISCON_TIME = 4  # cycle slip for >= 4 samples without info
 EL_CUTOFF = 0.25  # elevation cutoff in radians, shallower than this ignored
 
 
-def get_dates_in_range(start_date: datetime, duration: timedelta) -> Iterable[datetime]:
+def _correct_satellite_info(dog, prn, data: numpy.array) -> None:
     """
-    Get a list of dates, starting with start_date, each 1 day apart
+    Go through the observables data and do small satellite correction fixing stuff
 
     Args:
-        start_date: the first date to include
-        duration: how long to include
-
-    Returns:
-        list of dates, each separated by 1 day
+        data: the observables data to correct for one satellite
     """
-    dates = [start_date]
-    last_date = start_date + timedelta(days=1)
-    while last_date > dates[0] + duration:
-        dates.append(last_date)
-        last_date += timedelta(days=1)
-    return dates
+    # TODO handle (rare) wrap-around case where correction pushes us back a week!
+    adj_sec = data["recv_time_sec"] - data["C1C"] / constants.SPEED_OF_LIGHT
+    for i, entry in enumerate(data):
+
+        time_of_interest = GPSTime(week=int(entry["recv_time_week"]), tow=adj_sec[i])
+        sat_info = dog.get_sat_info(prn, time_of_interest)
+        # laika doesn't fall back to less-accurate NAV data if SP3 data is unavailable
+        # if sat_info is empty, we can try it ourselves
+        if sat_info is None:
+            eph = dog.get_nav(prn, time_of_interest)
+            if eph is None:
+                continue
+            sat_info = eph.get_sat_info(time_of_interest)
+
+        # if it's still empty, it's a lost cause
+        if sat_info is None:
+            continue
+        entry["sat_clock_err"] = sat_info[2]
+        entry["sat_pos"] = sat_info[0]
+        entry["sat_vel"] = sat_info[1]
+        entry["is_processed"] = True
+
+
+def _populate_data(
+    stations: Iterable[str],
+    start_date: datetime,
+    date_list: Iterable[datetime],
+    dog: AstroDog,
+) -> Tuple[Dict[str, Iterable[float]], Dict[str, Dict[str, numpy.array]]]:
+    """
+    Download/populate the station data and station location info
+
+    TODO: is this a good place to be caching results?
+    """
+
+    # dict of station names -> XYZ ECEF locations in meters
+    station_locs: Dict[str, Iterable[float]] = {}
+    # dict of station names -> dict of prn -> numpy observation data
+    station_data: Dict[str, Dict[str, numpy.array]] = {}
+
+    gps_start = GPSTime.from_datetime(start_date)
+
+    for station in stations:
+        for date in date_list:
+            gps_date = GPSTime.from_datetime(date)
+            try:
+                latest_data = dense_data.dense_data_for_station(dog, gps_date, station)
+            except DownloadError:
+                continue
+            if station not in station_data:
+                station_data[station] = latest_data
+            else:
+                # we've already got some data, so merge it together
+                station_data[station] = dense_data.merge_data(
+                    station_data[station], latest_data
+                )
+            if station not in station_locs:
+                station_locs[station] = get_data.location_for_station(
+                    dog, gps_date, station
+                )
+
+        for prn, obs_data in station_data[station].items():
+            _correct_satellite_info(dog, prn, obs_data)
+            obs_data["tick"] = (
+                (obs_data["recv_time_sec"] - gps_start.tow)
+                + (obs_data["recv_time_week"] - gps_start.week)
+                * gps_start.seconds_in_week
+            ) // 30
+    return station_locs, station_data
 
 
 class Scenario:
@@ -58,97 +121,110 @@ class Scenario:
     """
 
     def __init__(
-        self, start_date: datetime, duration: timedelta, stations: Iterable[str]
+        self,
+        start_date: datetime,
+        duration: timedelta,
+        station_locs: Dict[str, Iterable[float]],
+        station_data: Dict[str, Dict[str, numpy.array]],
+        dog: AstroDog,
+        conn_map=None,
     ) -> None:
-        """
-        Args:
-            start_date: when to start the scenario
-            duration: how long the scenario should last
-            stations: list of stations to use
-
-        TODO: populate stations automatically?
-        """
-        self.dog = AstroDog(cache_dir=conf.cache_dir)
-        self.cache_dir: str = conf.cache_dir
+        self.dog = dog
+        self.cache_dir = dog.cache_dir
         self.start_date = start_date
+        self.date_list = _get_dates_in_range(start_date, duration)
         self.duration = duration
-        self.date_list = get_dates_in_range(start_date, duration)
-        self.stations = set(stations)
 
-        # dict of station names -> XYZ ECEF locations in meters
-        self.station_locs: Dict[str, Iterable[float]] = {}
-        # dict of station names -> dict of prn -> numpy observation data
-        self.station_data: Dict[str, Dict[str, numpy.array]] = {}
+        self.stations = set(station_data)
 
-        self.conn_map = None
+        self.station_locs = station_locs
+        self.station_data = station_data
+
+        self.conn_map = conn_map
 
         # biases to be calculated of prn or station to clock bias in meters (C*time)
         # by some weird convention I don't get, these have opposite signs applied to them
         self.sat_biases: Dict[str, float] = {}
         self.rcvr_biases: Dict[str, float] = {}
 
-        self._populate_data()
-
-    def _populate_data(self) -> None:
-        """
-        Download/populate the station data and station location info
-
-        TODO: is this a good place to be caching results?
-        """
-        assert len(self.station_data) == 0, "data already populated"
-
-        for station in self.stations:
-            for date in self.date_list:
-                gps_date = GPSTime.from_datetime(date)
-                try:
-                    latest_data = dense_data.dense_data_for_station(
-                        self.dog, gps_date, station
-                    )
-                except DownloadError:
-                    continue
-                if station not in self.station_data:
-                    self.station_data[station] = latest_data
-                else:
-                    # we've already got some data, so merge it together
-                    self.station_data[station] = dense_data.merge_data(
-                        self.station_data[station], latest_data
-                    )
-                if station not in self.station_locs:
-                    self.station_locs[station] = get_data.location_for_station(
-                        self.dog, gps_date, station
-                    )
-
-            for prn, obs_data in self.station_data[station].items():
-                self.correct_satellite_info(prn, obs_data)
-
-    def correct_satellite_info(self, prn, data: numpy.array) -> None:
-        """
-        Go through the observables data and do small satellite correction fixing stuff
-
-        Args:
-            data: the observables data to correct for one satellite
-        """
-        adj_sec = data["recv_time_sec"] - data["C1C"] / constants.SPEED_OF_LIGHT
-        for i, entry in enumerate(data):
-            time_of_interest = GPSTime(
-                week=int(entry["recv_time_week"]), tow=adj_sec[i]
+    def to_hdf5(self, fname: Path, *, mode="w-"):
+        with h5py.File(fname, mode) as fout:
+            for station, sats in self.station_data.items():
+                for prn, data in sats.items():
+                    fout.create_dataset(f"data/{station}/{prn}", data=data)
+            for station, loc in self.station_locs.items():
+                fout[f"loc/{station}"] = loc
+            fout.attrs.update(
+                {
+                    "start_date": self.start_date.timestamp(),
+                    "duration": self.duration.total_seconds(),
+                }
             )
-            sat_info = self.dog.get_sat_info(prn, time_of_interest)
-            # laika doesn't fall back to less-accurate NAV data if SP3 data is unavailable
-            # if sat_info is empty, we can try it ourselves
-            if sat_info is None:
-                eph = self.dog.get_nav(prn, time_of_interest)
-                if eph is None:
-                    continue
-                sat_info = eph.get_sat_info(time_of_interest)
 
-            # if it's still empty, it's a lost cause
-            if sat_info is None:
-                continue
-            entry["sat_clock_err"] = sat_info[2]
-            entry["sat_pos"] = sat_info[0]
-            entry["sat_vel"] = sat_info[1]
-            entry["is_processed"] = True
+    @classmethod
+    def from_hdf5(cls, fname: Path, *, dog: Optional[AstroDog] = None):
+        if dog is None:
+            dog = AstroDog(cache_dir=conf.cache_dir)
+        with h5py.File(fname, "r") as fin:
+            start_date = datetime.fromtimestamp(fin.attrs["start_date"])
+            duration = timedelta(seconds=int(fin.attrs["duration"]))
+            station_data = {
+                station: {sat: ds[:] for sat, ds in group.items()}
+                for station, group in fin["data"].items()
+            }
+            station_locs = {station: ds[:] for station, ds in fin["loc"].items()}
+
+        return cls(start_date, duration, station_locs, station_data, dog)
+
+    @classmethod
+    def from_daterange(
+        cls,
+        start_date: datetime,
+        duration: timedelta,
+        stations: Iterable[str],
+        dog: Optional[AstroDog] = None,
+        *,
+        use_cache: bool = True,
+    ) -> None:
+        """
+        Args:
+            start_date: when to start the scenario
+            duration: how long the scenario should last
+            stations: list of stations to use
+            dog: Optional, AstroDog instance to use to manage data access
+            use_cache: Optional, if should consider TID's cache
+        Returns:
+            scenario: The requested Scenario
+
+        TODO: populate stations automatically?
+        """
+
+        if dog is None:
+            dog = AstroDog(cache_dir=conf.cache_dir)
+        cache_key = cls.compute_cache_key(start_date, duration, stations)
+        cache_path = Path(conf.cache_dir) / "scenarios" / f"{cache_key}.hdf5"
+        if use_cache and cache_path.exists():
+            return cls.from_hdf5(cache_path, dog=dog)
+
+        date_list = _get_dates_in_range(start_date, duration)
+        stations = set(stations)
+        locs, data = _populate_data(stations, start_date, date_list, dog)
+        sc = cls(start_date, duration, locs, data, dog)
+
+        if use_cache:
+            cache_path.parent.mkdir(exist_ok=True)
+            sc.to_hdf5(cache_path, mode="w")
+        return sc
+
+    @staticmethod
+    def compute_cache_key(
+        start_date: datetime, duration: timedelta, stations: Iterable[str]
+    ) -> str:
+        h = hashlib.md5()
+        h.update(repr(sorted(stations)).encode())
+        h.update(start_date.isoformat().encode())
+        h.update(repr(duration.total_seconds()).encode())
+        return h.hexdigest()
 
     @lru_cache(maxsize=None)
     def _station_converter(self, station: str) -> coordinates.LocalCoord:
@@ -193,7 +269,7 @@ class Scenario:
         """
         time = GPSTime(
             week=int(observations[0]["recv_time_week"]),
-            tow=observations[0]["recv_time_sec"],
+            tow=float(observations[0]["recv_time_sec"]),
         )
         f1, f2 = [self.dog.get_frequency(prn, time, band) for band in ("C1C", "C2C")]
         # if the lookup didn't work, we can't proceed
