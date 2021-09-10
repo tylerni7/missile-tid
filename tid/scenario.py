@@ -68,7 +68,7 @@ def _populate_data(
     stations: Iterable[str],
     date_list: Sequence[datetime],
     dog: AstroDog,
-) -> Tuple[Dict[str, types.ECEF_XYZ], Dict[str, Dict[str, types.DenseDataType]]]:
+) -> Tuple[Dict[str, types.ECEF_XYZ], types.StationPrnMap[types.DenseDataType]]:
     """
     Download/populate the station data and station location info
 
@@ -87,7 +87,7 @@ def _populate_data(
     # dict of station names -> XYZ ECEF locations in meters
     station_locs: Dict[str, Iterable[float]] = {}
     # dict of station names -> dict of prn -> numpy observation data
-    station_data: Dict[str, Dict[str, numpy.array]] = {}
+    station_data: types.StationPrnMap[numpy.array] = {}
 
     gps_start = GPSTime.from_datetime(date_list[0])
 
@@ -138,7 +138,7 @@ class Scenario:
         start_date: datetime,
         duration: timedelta,
         station_locs: Dict[str, types.ECEF_XYZ],
-        station_data: Dict[str, Dict[str, types.DenseDataType]],
+        station_data: types.StationPrnMap[types.DenseDataType],
         dog: AstroDog,
         conn_map=None,
     ) -> None:
@@ -166,7 +166,15 @@ class Scenario:
         self.sat_biases: Dict[str, float] = {}
         self.rcvr_biases: Dict[str, float] = {}
 
-    def to_hdf5(self, fname: Path, *, mode="w-"):
+    def to_hdf5(self, fname: Path, *, overwrite=False) -> None:
+        """
+        Serialize/cache the scenario to hdf5 datastructure
+
+        Args:
+            fname: the path to which the data should be saved
+            overwrite: whether the file should be overwritten if it already exists
+        """
+        mode = "w" if overwrite else "w-"
         with h5py.File(fname, mode) as fout:
             for station, sats in self.station_data.items():
                 for prn, data in sats.items():
@@ -181,7 +189,18 @@ class Scenario:
             )
 
     @classmethod
-    def from_hdf5(cls, fname: Path, *, dog: Optional[AstroDog] = None):
+    def from_hdf5(cls, fname: Path, *, dog: Optional[AstroDog] = None) -> Scenario:
+        """
+        Deserialize/fetch the scenario from an hdf5 save file
+
+        Args:
+            fname: the path from which the data should be restored
+            dog: a Laika AstroDog object (if unspecified will make a new one)
+                that the scenario should use
+
+        Returns:
+            the cached scenario
+        """
         if dog is None:
             dog = AstroDog(cache_dir=conf.cache_dir)
         with h5py.File(fname, "r") as fin:
@@ -204,7 +223,7 @@ class Scenario:
         dog: Optional[AstroDog] = None,
         *,
         use_cache: bool = True,
-    ) -> None:
+    ) -> Scenario:
         """
         Args:
             start_date: when to start the scenario
@@ -212,6 +231,7 @@ class Scenario:
             stations: list of stations to use
             dog: Optional, AstroDog instance to use to manage data access
             use_cache: Optional, if should consider TID's cache
+
         Returns:
             scenario: The requested Scenario
 
@@ -232,7 +252,7 @@ class Scenario:
 
         if use_cache:
             cache_path.parent.mkdir(exist_ok=True)
-            scn.to_hdf5(cache_path, mode="w")
+            scn.to_hdf5(cache_path, overwrite=True)
         return scn
 
     @staticmethod
@@ -250,11 +270,11 @@ class Scenario:
         Returns:
             unique string for the given arguments
         """
-        h = hashlib.md5()
-        h.update(repr(sorted(stations)).encode())
-        h.update(start_date.isoformat().encode())
-        h.update(repr(duration.total_seconds()).encode())
-        return h.hexdigest()
+        hasher = hashlib.md5()
+        hasher.update(repr(sorted(stations)).encode())
+        hasher.update(start_date.isoformat().encode())
+        hasher.update(repr(duration.total_seconds()).encode())
+        return hasher.hexdigest()
 
     @lru_cache(maxsize=None)
     def _station_converter(self, station: str) -> coordinates.LocalCoord:
@@ -308,11 +328,18 @@ class Scenario:
         # add a degree of padding around the edge
         return min_lon - 1, max_lon + 1, min_lat - 1, max_lat + 1
 
-    def get_vtec_data(self) -> Tuple:
+    def get_filtered_vtec_data(
+        self,
+    ) -> Tuple[
+        types.StationPrnMap[Sequence[float]],
+        types.StationPrnMap[Sequence[Optional[Tuple[float, float]]]],
+    ]:
         """
-        Get organized vtec data for this scenario
+        Get organized vtec data for this scenario.
 
         Returns:
+            map of station -> prn -> filtered vtec data, one per tick
+            map of station -> prn -> (lat, lon values or None if no data), one per tick
         """
         vtecs = {}
         ipps = {}
@@ -327,6 +354,48 @@ class Scenario:
                 vtecs[station][prn] = self.conn_map[station][prn].get_filtered_vtecs()
                 ipps[station][prn] = self.conn_map[station][prn].get_ipps_latlon()
         return vtecs, ipps
+
+    def export_vtec_data(self, fname: Path) -> None:
+        """
+        Write out a big matrix with filtered vtec data to easily share it around
+
+        Args:
+            fname: path for where the data should be written
+        """
+        tick_count = int(self.duration.total_seconds() / util.DATA_RATE)
+        stations = sorted(self.station_data.keys())
+        sats = sorted(
+            set(
+                sum(
+                    [
+                        list(station_map.keys())
+                        for station_map in self.conn_map.values()
+                    ],
+                    start=[],
+                )
+            )
+        )
+        max_obs = len(stations) * len(sats)
+
+        res = numpy.zeros(
+            (tick_count, max_obs), dtype=[("vtec", "f8"), ("latlon", "2f8")]
+        )
+
+        for station in self.conn_map.keys():
+            station_idx = stations.index(station)
+            for prn in self.conn_map[station].keys():
+                sat_idx = sats.index(prn)
+                if not self.conn_map[station][prn].connections:
+                    continue
+                vtecs = self.conn_map[station][prn].get_filtered_vtecs()
+                ipps = self.conn_map[station][prn].get_ipps_latlon()
+                for tick in range(tick_count):
+                    latlon = ipps[tick]
+                    if latlon is None:
+                        continue
+                    res[tick][station_idx * len(sats) + sat_idx] = (vtecs[tick], latlon)
+        with h5py.File(fname, "w") as fout:
+            fout.create_dataset("data", data=res, compression="gzip")
 
     def get_glonass_chan(
         self, prn: str, observations: types.DenseDataType

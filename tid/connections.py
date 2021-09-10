@@ -234,7 +234,7 @@ class Connection:
             return tec.C * (self.n_chan2 / f2 - self.n_chan1 / f1)
 
         # otherwise use the code-phase smoothed difference values
-        elif self.offset is not None:
+        if self.offset is not None:
             return self.offset
 
         assert False, "carrier correction attempted with no correction mechanism"
@@ -277,7 +277,7 @@ class SparseList:
         index_ranges: Iterable[Tuple[int, int]],
         data: Iterable[Sequence],
         tick_lookup: Iterable[Callable[[int], Optional[int]]],
-        default=0.0,
+        default: Any = 0.0,
     ):
         self.ranges = index_ranges
         self.data = data
@@ -285,10 +285,26 @@ class SparseList:
         self.default = default
         self.max = max(i[1] for i in index_ranges)
 
-    def __len__(self):
-        return self.max
+    def __len__(self) -> int:
+        """
+        Returns the total number of ticks available to be fetched
+        (so this matches a Sequence type)
 
-    def __getitem__(self, tick: int):
+        Returns:
+            the integer length
+        """
+        return self.max + 1
+
+    def __getitem__(self, tick: int) -> Any:
+        """
+        Fetch the given tick data
+
+        Args:
+            tick: the tick number to fetch
+
+        Returns:
+            the data associated with that tick, or the default value if it was not found
+        """
         for data_range, datum, tick_lookup in zip(
             self.ranges, self.data, self.tick_lookup
         ):
@@ -323,14 +339,27 @@ class ConnTickMap:
                 return con
         raise KeyError
 
-    def get_vtecs(self):
+    def get_vtecs(self) -> Sequence[float]:
+        """
+        Get vtec data for this set of connections
+
+        Returns:
+            SparseList of raw VTEC TECu values, one per tick, 0.0 if unknown
+        """
         return SparseList(
             [(con.tick_start, con.tick_end) for con in self.connections],
             [con.vtecs[0] for con in self.connections],
             [con.tick_idx for con in self.connections],
         )
 
-    def get_filtered_vtecs(self):
+    def get_filtered_vtecs(self) -> Sequence[float]:
+        """
+        Get bandpass filtered vtec data for this set of connections
+
+        Returns:
+            SparseList of 2nd order butterworth bandpass filtered VTEC TECu values,
+            one per tick, 0.0 if unknown
+        """
         index_ranges = []
         data = []
         tick_lookup = []
@@ -344,7 +373,16 @@ class ConnTickMap:
             tick_lookup.append(con.tick_idx)
         return SparseList(index_ranges, data, tick_lookup)
 
-    def get_ipps(self):
+    def get_ipps(self) -> Sequence[Optional[types.ECEF_XYZ]]:
+        """
+        Get the ionospheric pierce points for each tick in this set of connections.
+
+        Returns:
+            SparseList of (
+                ECEF XYZ coordinates in meters, or None if there is no
+                data for that tick
+            )
+        """
         return SparseList(
             [(con.tick_start, con.tick_end) for con in self.connections],
             [con.ipps for con in self.connections],
@@ -352,7 +390,15 @@ class ConnTickMap:
             default=None,
         )
 
-    def get_ipps_latlon(self):
+    def get_ipps_latlon(self) -> Sequence[Optional[Tuple[float, float]]]:
+        """
+        Get the ionospheric pierce points for each tick in this set of connections.
+
+        Returns:
+            SparseList of (
+                lat, lon values, or None if there is no data for that tick
+            )
+        """
         return SparseList(
             [(con.tick_start, con.tick_end) for con in self.connections],
             [coordinates.ecef2geodetic(con.ipps)[..., 0:2] for con in self.connections],

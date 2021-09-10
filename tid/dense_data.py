@@ -41,14 +41,12 @@ DENSE_TYPE = [
 ]
 
 
-def _meas_to_tuple(raw_meas: GNSSMeasurement, station_name: str) -> tuple:
+def _meas_to_tuple(raw_meas: GNSSMeasurement) -> tuple:
     """
     Given a raw Laika GNSSMeasurement into a tuple to be used by our numpy struct
 
     Args:
         raw_meas: the Laika measurement
-        station_name: station name this goes with
-        tick: tick number
 
     Returns:
         tuple of the data values in question
@@ -87,9 +85,7 @@ def _meas_to_tuple(raw_meas: GNSSMeasurement, station_name: str) -> tuple:
     )
 
 
-def from_raw_obs(
-    station_name: str, raw_obs: Sequence[Sequence[GNSSMeasurement]]
-) -> DenseMeasurements:
+def from_raw_obs(raw_obs: Sequence[Sequence[GNSSMeasurement]]) -> DenseMeasurements:
     """
     Given a raw observation from a station, convert it to the more memory efficient format
 
@@ -108,11 +104,11 @@ def from_raw_obs(
         for obs in sat_obs:
             if obs.prn not in sv_dict_tmp:
                 sv_dict_tmp[obs.prn] = []
-            sv_dict_tmp[obs.prn].append(_meas_to_tuple(obs, station_name))
+            sv_dict_tmp[obs.prn].append(_meas_to_tuple(obs))
 
     # convert the python lists into numpy arrays to save a bit of memory
-    for key in sv_dict_tmp:
-        sv_dict_out[key] = numpy.array(sv_dict_tmp[key], dtype=DENSE_TYPE)
+    for key, value in sv_dict_tmp.items():
+        sv_dict_out[key] = numpy.array(value, dtype=DENSE_TYPE)
         if numpy.all(numpy.isnan(sv_dict_out[key]["C2C"])):
             sv_dict_out[key][["C2C", "C2P"]] = sv_dict_out[key][["C2P", "C2C"]]
 
@@ -129,8 +125,6 @@ def dense_data_for_station(
     Args:
         dog: laika AstroDog object
         time: laika GPSTime object for the time in question
-        station_name: string of the station in question
-            station names are CORS names or similar (eg: 'slac')
 
     Returns:
         a tuple consisting of
@@ -142,9 +136,7 @@ def dense_data_for_station(
 
     TODO: caching of the results on disk? or should that happen later?
     """
-    return from_raw_obs(
-        station_name, get_data.data_for_station(dog, time, station_name)
-    )
+    return from_raw_obs(get_data.data_for_station(dog, time, station))
 
 
 def merge_data(data1: DenseMeasurements, data2: DenseMeasurements) -> DenseMeasurements:

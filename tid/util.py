@@ -3,7 +3,7 @@ Generic utility functions that help make life easier when dealing with data
 Should be mostly short wrapper functions
 """
 from datetime import datetime, timedelta
-from typing import Dict, Optional, Sequence, Iterable, Tuple
+from typing import Optional, Sequence, Iterable
 
 import numpy
 from scipy.signal import butter, filtfilt
@@ -11,7 +11,6 @@ from scipy.signal import butter, filtfilt
 from laika.gps_time import GPSTime
 from laika.lib import coordinates
 
-from tid import types
 
 DATA_RATE = 30  # how many seconds / measurement
 DAYS = timedelta(days=1)
@@ -105,27 +104,55 @@ def get_dates_in_range(start_date: datetime, duration: timedelta) -> Iterable[da
     return dates
 
 
-def butter_bandpass(lowcut, highcut, fs, order=2):
-    """
-    # https://stackoverflow.com/questions/12093594/how-to-implement-band-pass-butterworth-filter-with-scipy-signal-butter
-    """
-    nyq = 0.5 * fs
-    low = lowcut / nyq
-    high = highcut / nyq
-    return butter(order, [low, high], btype="band")
-
-
 BUTTER_MIN_LENGTH = 28
 
 
-def butter_bandpass_filter(data, lowcut, highcut, fs, order=2):
-    a, b = butter_bandpass(lowcut, highcut, fs, order=order)
-    if len(data) < 28:
+def butter_bandpass_filter(
+    data: numpy.ndarray,
+    lowcut: float,
+    highcut: float,
+    samplerate: float,
+    order: int = 2,
+):
+    """
+    Generic Butterworth bandpass filter function
+    https://stackoverflow.com/questions/12093594/how-to-implement-band-pass-butterworth-filter-with-scipy-signal-butter
+
+    Args:
+        data: 1D numpy array of data at 1 sample per DATA_RATE time
+        lowcut: frequency (in Hz) below which to attenuate
+        highcut: frequency (in Hz) below which to attenuate
+        samplerate: sampling rate frequency (in Hz) of the incoming data
+        order: the order of the polynomial or whatever to use for filtering the data
+
+    Returns:
+        1D numpy array of the filtered data, or None if there wasn't enough data to properly filter
+    """
+    nyq = 0.5 * samplerate
+    lowf = lowcut / nyq
+    highf = highcut / nyq
+    # generic names for coefficients in filters
+    # pylint: disable=invalid-name
+    a, b = butter(order, [lowf, highf], btype="band")
+    if len(data) < BUTTER_MIN_LENGTH:
         return None
     return filtfilt(a, b, data)
 
 
-def bpfilter(data, short_min=2, long_min=12):
+def bpfilter(
+    data: numpy.ndarray, short_min: float = 2, long_min: float = 12
+) -> Optional[numpy.ndarray]:
+    """
+    Perform a 2nd-order Butterworth Bandpass filter on the given data
+
+    Args:
+        data: 1D numpy array of data at 1 sample per DATA_RATE time
+        short_min: attenuate signals with periods below this many minutes
+        long_min: attenuate signals with periods above this many minutes
+
+    Returns:
+        1D numpy array of the filtered data, or None if there wasn't enough data to properly filter
+    """
     return butter_bandpass_filter(
-        data, 1 / (long_min * 60), 1 / (short_min * 60), 1 / 30
+        data, 1 / (long_min * 60), 1 / (short_min * 60), 1 / DATA_RATE
     )

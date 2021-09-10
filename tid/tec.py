@@ -11,7 +11,7 @@ import numpy
 
 from laika import constants
 
-from tid import types, util
+from tid import types
 
 
 # deal with circular type definitions
@@ -177,6 +177,8 @@ def ion_locs(
     Returns:
         numpy array of positions of ionospheric pierce points
     """
+    # Names are from quadratic formula, so a bit opaque
+    # pylint: disable=invalid-name
     a = numpy.sum((sat_pos - rec_pos) ** 2, axis=1)
     b = 2 * numpy.sum((sat_pos - rec_pos) * rec_pos, axis=1)
     c = numpy.sum(rec_pos ** 2) - ionh ** 2
