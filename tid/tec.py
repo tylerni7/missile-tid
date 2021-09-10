@@ -29,7 +29,6 @@ C = constants.SPEED_OF_LIGHT
 
 def melbourne_wubbena(
     frequencies: Optional[Tuple[float, float]],
-    chan2: str,
     observations: types.DenseDataType,
 ) -> Optional[numpy.ndarray]:
     """
@@ -53,7 +52,7 @@ def melbourne_wubbena(
     f1, f2 = frequencies
 
     phase = C / (f1 - f2) * (observations["L1C"] - observations["L2C"])
-    pseudorange = 1 / (f1 + f2) * (f1 * observations["C1C"] + f2 * observations[chan2])
+    pseudorange = 1 / (f1 + f2) * (f1 * observations["C1C"] + f2 * observations["C2C"])
     # wavelength = C/(f0 - f2)
     return phase - pseudorange
 

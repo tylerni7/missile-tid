@@ -10,8 +10,8 @@ import re
 from typing import Iterable, Optional, Sequence
 import zipfile
 
-import requests
 import numpy
+import requests
 
 from laika import AstroDog, raw_gnss
 from laika.dgps import get_station_position

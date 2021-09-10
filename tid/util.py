@@ -4,7 +4,9 @@ Should be mostly short wrapper functions
 """
 from datetime import datetime, timedelta
 from typing import Dict, Optional, Sequence, Iterable, Tuple
+
 import numpy
+from scipy.signal import butter, filtfilt
 
 from laika.gps_time import GPSTime
 from laika.lib import coordinates
@@ -41,53 +43,6 @@ def datetime_fromstr(timestr: str) -> GPSTime:
     """
 
     return datetime.strptime(timestr, "%Y-%m-%d")
-
-
-"""
-cache channel2 lookups:
-    we need to be consistent about what "channel2" means, because
-    if we swap back and forth for a set of data, we might start
-    having NaNs show up!
-"""
-channel2_cache: Dict[Tuple[str, str], str] = {}
-
-
-def channel2(station: str, prn: str, observations: types.DenseDataType) -> str:
-    """
-    Frequently we want to know if the channel 2 code phase data
-    is from C2C or C2P. This function wraps that (simple) logic
-    to keep things cleaner
-
-    Args:
-        station: the station of interest
-        prn: the prn of interest
-        observations: the numpy array of dense observations
-
-    Returns:
-        a string of "C2C" or "C2P"
-
-    Raises:
-        LookupError if neither of those signals is available
-    """
-    # default channel 2 code phase signal
-    if numpy.isnan(observations[0]["C2C"]):
-        raise LookupError
-
-    return "C2C"
-
-    lookup = channel2_cache.get((station, prn))
-    if lookup is not None:
-        return lookup
-    chan2 = "C2C"
-    if numpy.isnan(observations[0]["C2C"]):
-        # less reliable channel 2 code phase signal
-        chan2 = "C2P"
-        if numpy.isnan(observations[0]["C2P"]):
-            # if we don't have that, we're done
-            raise LookupError
-
-    channel2_cache[(station, prn)] = chan2
-    return chan2
 
 
 def station_location_from_rinex(rinex_path: str) -> Optional[Sequence]:
@@ -148,3 +103,29 @@ def get_dates_in_range(start_date: datetime, duration: timedelta) -> Iterable[da
         dates.append(last_date)
         last_date += timedelta(days=1)
     return dates
+
+
+def butter_bandpass(lowcut, highcut, fs, order=2):
+    """
+    # https://stackoverflow.com/questions/12093594/how-to-implement-band-pass-butterworth-filter-with-scipy-signal-butter
+    """
+    nyq = 0.5 * fs
+    low = lowcut / nyq
+    high = highcut / nyq
+    return butter(order, [low, high], btype="band")
+
+
+BUTTER_MIN_LENGTH = 28
+
+
+def butter_bandpass_filter(data, lowcut, highcut, fs, order=2):
+    a, b = butter_bandpass(lowcut, highcut, fs, order=order)
+    if len(data) < 28:
+        return None
+    return filtfilt(a, b, data)
+
+
+def bpfilter(data, short_min=2, long_min=12):
+    return butter_bandpass_filter(
+        data, 1 / (long_min * 60), 1 / (short_min * 60), 1 / 30
+    )

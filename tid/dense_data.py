@@ -113,6 +113,8 @@ def from_raw_obs(
     # convert the python lists into numpy arrays to save a bit of memory
     for key in sv_dict_tmp:
         sv_dict_out[key] = numpy.array(sv_dict_tmp[key], dtype=DENSE_TYPE)
+        if numpy.all(numpy.isnan(sv_dict_out[key]["C2C"])):
+            sv_dict_out[key][["C2C", "C2P"]] = sv_dict_out[key][["C2P", "C2C"]]
 
     return sv_dict_out
 

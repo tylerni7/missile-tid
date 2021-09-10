@@ -61,7 +61,7 @@ class SimpleBiasSolver(BiasSolver):
         # scenario object, from which we will extract some useful info
         self.scenario = scenario
 
-        self.stations = sorted(self.scenario.stations)
+        self.stations = sorted(self.scenario.conn_map.keys())
         self.sats = sorted(list(self._get_sats()))
 
         self.total_tec_values = 0

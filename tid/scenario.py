@@ -7,7 +7,7 @@ from __future__ import annotations  # defer type annotations due to circular stu
 
 from datetime import datetime, timedelta
 from functools import lru_cache
-from typing import Dict, Iterable, Optional, Tuple, Union
+from typing import Dict, Iterable, Optional, Sequence, Tuple, Union
 from pathlib import Path
 import hashlib
 
@@ -66,12 +66,20 @@ def _correct_satellite_info(dog, prn, data: numpy.array) -> None:
 
 def _populate_data(
     stations: Iterable[str],
-    start_date: datetime,
-    date_list: Iterable[datetime],
+    date_list: Sequence[datetime],
     dog: AstroDog,
-) -> Tuple[Dict[str, Iterable[float]], Dict[str, Dict[str, numpy.array]]]:
+) -> Tuple[Dict[str, types.ECEF_XYZ], Dict[str, Dict[str, types.DenseDataType]]]:
     """
     Download/populate the station data and station location info
+
+    Args:
+        stations: list of station names
+        date_list: ordered list of the dates for which to fetch data
+        dog: astro dog to use
+
+    Returns:
+        dictionary of station names to their locations,
+        dictionary of station names to sat names to their dense data
 
     TODO: is this a good place to be caching results?
     """
@@ -81,7 +89,7 @@ def _populate_data(
     # dict of station names -> dict of prn -> numpy observation data
     station_data: Dict[str, Dict[str, numpy.array]] = {}
 
-    gps_start = GPSTime.from_datetime(start_date)
+    gps_start = GPSTime.from_datetime(date_list[0])
 
     for station in stations:
         for date in date_list:
@@ -102,6 +110,10 @@ def _populate_data(
                     dog, gps_date, station
                 )
 
+        # didn't download data, ignore it
+        if station not in station_data:
+            continue
+
         for prn, obs_data in station_data[station].items():
             _correct_satellite_info(dog, prn, obs_data)
             obs_data["tick"] = (
@@ -109,6 +121,7 @@ def _populate_data(
                 + (obs_data["recv_time_week"] - gps_start.week)
                 * gps_start.seconds_in_week
             ) // 30
+
     return station_locs, station_data
 
 
@@ -129,14 +142,21 @@ class Scenario:
         dog: AstroDog,
         conn_map=None,
     ) -> None:
+        """
+        Internal / raw constructor, probably not for use by mortals
+
+        Args:
+            start_date: start of the scenario
+
+        """
         self.dog = dog
         self.cache_dir = dog.cache_dir
         self.start_date = start_date
         self.date_list = _get_dates_in_range(start_date, duration)
         self.duration = duration
 
-        self.station_locs: Dict[str, types.ECEF_XYZ] = {}
-        self.station_data: Dict[str, Dict[str, types.DenseDataType]] = {}
+        self.station_locs = station_locs
+        self.station_data = station_data
 
         self.conn_map = conn_map
 
@@ -207,18 +227,29 @@ class Scenario:
 
         date_list = _get_dates_in_range(start_date, duration)
         stations = set(stations)
-        locs, data = _populate_data(stations, start_date, date_list, dog)
-        sc = cls(start_date, duration, locs, data, dog)
+        locs, data = _populate_data(stations, date_list, dog)
+        scn = cls(start_date, duration, locs, data, dog)
 
         if use_cache:
             cache_path.parent.mkdir(exist_ok=True)
-            sc.to_hdf5(cache_path, mode="w")
-        return sc
+            scn.to_hdf5(cache_path, mode="w")
+        return scn
 
     @staticmethod
     def compute_cache_key(
         start_date: datetime, duration: timedelta, stations: Iterable[str]
     ) -> str:
+        """
+        Given scenario arguments, calculate a unique id for those arguments
+
+        Args:
+            start_date: when the scenario starts
+            duration: how long the scenario lasts
+            stations: the name of the stations to use
+
+        Returns:
+            unique string for the given arguments
+        """
         h = hashlib.md5()
         h.update(repr(sorted(stations)).encode())
         h.update(start_date.isoformat().encode())
@@ -257,7 +288,32 @@ class Scenario:
         sat_range = numpy.linalg.norm(sat_ned, axis=1)
         return numpy.arcsin(-sat_ned[..., 2] / sat_range)
 
-    def get_vtec_data(self):
+    def get_extent(self) -> Tuple[float, float, float, float]:
+        """
+        Get a rough idea of the geographic region we are working with.
+
+        Returns:
+            min longitude, max longitude, min latitude, max latitude
+            all in degrees
+        """
+        max_lat, max_lon = -numpy.inf, -numpy.inf
+        min_lat, min_lon = numpy.inf, numpy.inf
+        for loc in self.station_locs.values():
+            lat, lon, _ = coordinates.ecef2geodetic(loc)
+            max_lat = max(max_lat, lat)
+            max_lon = max(max_lon, lon)
+            min_lat = min(min_lat, lat)
+            min_lon = min(min_lon, lon)
+
+        # add a degree of padding around the edge
+        return min_lon - 1, max_lon + 1, min_lat - 1, max_lat + 1
+
+    def get_vtec_data(self) -> Tuple:
+        """
+        Get organized vtec data for this scenario
+
+        Returns:
+        """
         vtecs = {}
         ipps = {}
         for station in self.conn_map.keys():
@@ -268,7 +324,7 @@ class Scenario:
                     vtecs[station] = {}
                 if station not in ipps:
                     ipps[station] = {}
-                vtecs[station][prn] = self.conn_map[station][prn].get_vtecs()
+                vtecs[station][prn] = self.conn_map[station][prn].get_filtered_vtecs()
                 ipps[station][prn] = self.conn_map[station][prn].get_ipps_latlon()
         return vtecs, ipps
 
@@ -333,18 +389,16 @@ class Scenario:
         Returns:
             a list of Connection objects
         """
+        if len(observations) < MIN_CON_LENGTH:
+            return []
+
         bkpoints = set()
 
         # first pass: when tickcount jumps by >= DISCON_TIME
         bkpoints |= set(numpy.where(numpy.diff(observations["tick"]) >= DISCON_TIME)[0])
 
-        try:
-            chan2 = util.channel2(station, prn, observations)
-        except LookupError:
-            # without a channel 2, not much to be doing
-            return []
         mw_signal = tec.melbourne_wubbena(
-            self.get_frequencies(prn, observations), chan2, observations
+            self.get_frequencies(prn, observations), observations
         )
         # if this calculation failed, we don't have proper dual channel info anyway
         if mw_signal is None:
@@ -403,12 +457,28 @@ class Scenario:
             if count < MIN_CON_LENGTH:
                 continue
 
-            connections.append(Connection(self, station, prn, start, bkpoint - 1))
+            connections.append(
+                Connection(
+                    self,
+                    station,
+                    prn,
+                    start,
+                    bkpoint - 1,
+                )
+            )
         start = partition_points[-1] + 1
         bkpoint = len(observations) - 1
         count = bkpoint - start
         if count >= MIN_CON_LENGTH:
-            connections.append(Connection(self, station, prn, start, bkpoint))
+            connections.append(
+                Connection(
+                    self,
+                    station,
+                    prn,
+                    start,
+                    bkpoint,
+                )
+            )
 
         return connections
 
