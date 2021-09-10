@@ -136,7 +136,7 @@ def dense_data_for_station(
 
     TODO: caching of the results on disk? or should that happen later?
     """
-    return from_raw_obs(get_data.data_for_station(dog, time, station))
+    return from_raw_obs(get_data.data_for_station(dog, time, station_name))
 
 
 def merge_data(data1: DenseMeasurements, data2: DenseMeasurements) -> DenseMeasurements:
