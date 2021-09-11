@@ -39,6 +39,8 @@ LAT_RES = 2.5  # 2.5 degrees
 LON_RES = 5  # 5 degrees
 TIME_RES = 60 * 15  # 15 minutes
 
+TEC_GUESS = 25  # TEC estimate, as it isn't centered about 0
+
 
 class BiasSolver(ABC):
     """
@@ -54,31 +56,6 @@ class BiasSolver(ABC):
         self,
     ) -> Tuple[Dict[str, float], Dict[str, Tuple[float, float, float]]]:
         """Solve the biases, return sat and station biases"""
-
-
-def _mat_insert(
-    matrix: numpy.ndarray, matrix_size: int, row: int, col: int, value: float
-) -> Tuple[numpy.ndarray, int]:
-    """
-    Helper function to insert data into a memory efficient format for array conversion
-
-    Args:
-        matrix: the numpy matrix into which we are adding entries
-        matrix_size: the number of entries in the matrix so far
-        row: the row of the data entry
-        col: the column of the data entry
-        value: the value of the data entry
-
-    Returns:
-        the matrix with the entry added, and the number of entries in the matrix
-    """
-    if matrix_size >= matrix.shape[0]:
-        # double the size
-        matrix = numpy.resize(matrix, matrix_size * 2)
-
-    matrix[matrix_size] = (row, col, value)
-    matrix_size += 1
-    return matrix, matrix_size
 
 
 def _sparse_lsq_solve(
@@ -121,12 +98,6 @@ class SimpleBiasSolver(BiasSolver):
 
         self.total_tec_values = 0
 
-        self.entries = []
-
-        # list of measured values to use for our LSQ result
-        self.b_values: List[float] = []
-        self.measurements = 0
-
     def _get_sats(self) -> Iterable[str]:
         """
         Return all the PRNs seen by all stations across all observations
@@ -135,7 +106,7 @@ class SimpleBiasSolver(BiasSolver):
             a set of all PRNs
         """
         sats = set()
-        for station_dict in self.scenario.station_data.values():
+        for station_dict in self.scenario.conn_map.values():
             sats |= set(station_dict.keys())
         return sats
 
@@ -225,6 +196,27 @@ class SimpleBiasSolver(BiasSolver):
         matrix_a_size = 0  # number of entries in the matrix
         b_values = []
 
+        def _mat_insert(row: int, col: int, value: float) -> None:
+            """
+            Helper function to insert data into a memory efficient format for array conversion
+
+            Args:
+                row: the row of the data entry
+                col: the column of the data entry
+                value: the value of the data entry
+
+            Note:
+                modifies matrix_a_list and matrix_a_size from outer scope
+            """
+            nonlocal matrix_a_list, matrix_a_size
+            if matrix_a_size >= matrix_a_list.shape[0]:
+                # double the size
+                matrix_a_list = numpy.resize(matrix_a_list, matrix_a_size * 2)
+
+            matrix_a_list[matrix_a_size] = (row, col, value)
+            matrix_a_size += 1
+
+        measurements = 0
         for entry in entries:
             (
                 vtec_total,
@@ -238,43 +230,33 @@ class SimpleBiasSolver(BiasSolver):
             tec_idx = tec_id_map.get(tec_loc)
             if tec_idx is None:
                 continue
-            b_values.append(vtec_total)
-            matrix_a_list, matrix_a_size = _mat_insert(
-                matrix_a_list, matrix_a_size, self.measurements, tec_idx, hit_cnt
-            )
-            matrix_a_list, matrix_a_size = _mat_insert(
-                matrix_a_list,
-                matrix_a_size,
-                self.measurements,
+            b_values.append(vtec_total - TEC_GUESS)
+            _mat_insert(measurements, tec_idx, hit_cnt)
+            _mat_insert(
+                measurements,
                 self.total_tec_values + sat_idx,
                 -slant_total,
             )
             if glonass_chan is not None:
                 # correction for GLONASS: offset + linear component
-                matrix_a_list, matrix_a_size = _mat_insert(
-                    matrix_a_list,
-                    matrix_a_size,
-                    self.measurements,
+                _mat_insert(
+                    measurements,
                     self.total_tec_values + len(self.sats) + station_idx * 3 + 1,
                     slant_total,
                 )
-                matrix_a_list, matrix_a_size = _mat_insert(
-                    matrix_a_list,
-                    matrix_a_size,
-                    self.measurements,
+                _mat_insert(
+                    measurements,
                     self.total_tec_values + len(self.sats) + station_idx * 3 + 2,
                     slant_total * glonass_chan,
                 )
             else:
                 # correction for GPS: single entry
-                matrix_a_list, matrix_a_size = _mat_insert(
-                    matrix_a_list,
-                    matrix_a_size,
-                    self.measurements,
+                _mat_insert(
+                    measurements,
                     self.total_tec_values + len(self.sats) + station_idx * 3,
                     slant_total,
                 )
-            self.measurements += 1
+            measurements += 1
 
         matrix_a_list = numpy.resize(matrix_a_list, matrix_a_size)
         return numpy.array(b_values), matrix_a_list
