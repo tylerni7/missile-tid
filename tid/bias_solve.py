@@ -198,7 +198,11 @@ class SimpleBiasSolver(BiasSolver):
         # then later we can convert this to a sparse.csr_matrix
         matrix_a_list = numpy.zeros(
             65536,  # guess a default size, not too harmful to get it wrong
-            dtype=[("row", numpy.int32), ("col", numpy.int32), ("value", numpy.float)],
+            dtype=[
+                ("row", numpy.int32),
+                ("col", numpy.int32),
+                ("value", numpy.float64),
+            ],
         )
         matrix_a_size = 0  # number of entries in the matrix
         b_values = []

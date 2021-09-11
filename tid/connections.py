@@ -277,7 +277,7 @@ class SparseList(collections.Sequence):
     def __init__(
         self,
         index_ranges: Iterable[Tuple[int, int]],
-        data: Iterable[Sequence],
+        data: Iterable[Union[Sequence, numpy.ndarray]],
         tick_lookup: Iterable[Callable[[int], Optional[int]]],
         default: Any = 0.0,
     ):

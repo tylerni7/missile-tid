@@ -4,7 +4,7 @@ This file has wrappers/helpers/definitions for a more
 space efficient format based on numpy
 """
 
-from typing import Dict, List, Sequence
+from typing import cast, Dict, List, Sequence
 import numpy
 
 from laika import AstroDog
@@ -108,7 +108,9 @@ def from_raw_obs(raw_obs: Sequence[Sequence[GNSSMeasurement]]) -> DenseMeasureme
 
     # convert the python lists into numpy arrays to save a bit of memory
     for key, value in sv_dict_tmp.items():
-        sv_dict_out[key] = numpy.array(value, dtype=DENSE_TYPE)
+        sv_dict_out[key] = cast(
+            types.DenseDataType, numpy.array(value, dtype=DENSE_TYPE)
+        )
         if numpy.all(numpy.isnan(sv_dict_out[key]["C2C"])):
             sv_dict_out[key][["C2C", "C2P"]] = sv_dict_out[key][["C2P", "C2C"]]
 

@@ -34,7 +34,7 @@ DISCON_TIME = 4  # cycle slip for >= 4 samples without info
 EL_CUTOFF = 0.25  # elevation cutoff in radians, shallower than this ignored
 
 
-def _correct_satellite_info(dog, prn, data: numpy.array) -> None:
+def _correct_satellite_info(dog, prn, data: types.DenseDataType) -> None:
     """
     Go through the observables data and do small satellite correction fixing stuff
 
@@ -87,7 +87,7 @@ def _populate_data(
     # dict of station names -> XYZ ECEF locations in meters
     station_locs: Dict[str, types.ECEF_XYZ] = {}
     # dict of station names -> dict of prn -> numpy observation data
-    station_data = cast(types.StationPrnMap[numpy.ndarray], {})
+    station_data = cast(types.StationPrnMap[types.DenseDataType], {})
 
     gps_start = GPSTime.from_datetime(date_list[0])
 
@@ -297,7 +297,7 @@ class Scenario:
 
     def station_el(
         self, station: str, sat_pos: Union[types.ECEF_XYZ, types.ECEF_XYZ_LIST]
-    ) -> numpy.ndarray:
+    ) -> Union[types.ECEF_XYZ, types.ECEF_XYZ_LIST]:
         """
         Helper to get elevations of satellite looks more efficiently.
         This re-uses the station converters which helps performance

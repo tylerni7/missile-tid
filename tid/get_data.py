@@ -69,13 +69,12 @@ def get_nearby_stations(
         station_names.append(name)
         station_pos.append(pos)
 
-    station_names = numpy.array(station_names)
-    station_pos = numpy.array(station_pos)
-    point = numpy.array(point)
+    np_station_names = numpy.array(station_names)
+    np_station_pos = numpy.array(station_pos)
 
-    dists = numpy.sqrt(((station_pos - numpy.array(point)) ** 2).sum(1))
+    dists = numpy.sqrt(((np_station_pos - numpy.array(point)) ** 2).sum(1))
 
-    return list(station_names[numpy.where(dists < dist)[0]])
+    return list(np_station_names[numpy.where(dists < dist)[0]])
 
 
 def _download_misc_igs_station(
