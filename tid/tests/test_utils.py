@@ -1,6 +1,10 @@
+"""
+Test utilities functions
+"""
+
+import datetime
 import pytest
 import tid.util as tu
-import datetime
 
 
 @pytest.mark.parametrize(
@@ -13,6 +17,9 @@ import datetime
 )
 @pytest.mark.parametrize("days", range(1, 5))
 def test_date_range(start_date, days):
+    """
+    Test the data range function
+    """
     if start_date.hour == 0 and start_date.minute == 0:
         expected_len = days
     else:

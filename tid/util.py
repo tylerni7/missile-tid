@@ -4,11 +4,15 @@ Should be mostly short wrapper functions
 """
 from datetime import datetime, timedelta
 from typing import Optional, Sequence, Iterable
+
 import numpy
+from scipy.signal import butter, filtfilt
 
 from laika.gps_time import GPSTime
 from laika.lib import coordinates
 
+
+DATA_RATE = 30  # how many seconds / measurement
 DAYS = timedelta(days=1)
 
 
@@ -40,32 +44,6 @@ def datetime_fromstr(timestr: str) -> GPSTime:
     return datetime.strptime(timestr, "%Y-%m-%d")
 
 
-def channel2(observations: numpy.array) -> str:
-    """
-    Frequently we want to know if the channel 2 code phase data
-    is from C2C or C2P. This function wraps that (simple) logic
-    to keep things cleaner
-
-    Args:
-        observations: the numpy array of dense observations
-
-    Returns:
-        a string of "C2C" or "C2P"
-
-    Raises:
-        LookupError if neither of those signals is available
-    """
-    # default channel 2 code phase signal
-    chan2 = "C2C"
-    if numpy.isnan(observations[0]["C2C"]):
-        # less reliable channel 2 code phase signal
-        chan2 = "C2P"
-        if numpy.isnan(observations[0]["C2P"]):
-            # if we don't have that, we're done
-            raise LookupError
-    return chan2
-
-
 def station_location_from_rinex(rinex_path: str) -> Optional[Sequence]:
     """
     Opens a RINEX file and looks in the headers for the station's position
@@ -87,7 +65,7 @@ def station_location_from_rinex(rinex_path: str) -> Optional[Sequence]:
         for _ in range(50):
             linedat = filedat.readline()
             if b"POSITION XYZ" in linedat:
-                xyz = [float(x) for x in linedat.split()[:3]]
+                xyz = numpy.array([float(x) for x in linedat.split()[:3]])
             elif b"Monument location:" in linedat:
                 lat, lon, height = [float(x) for x in linedat.split()[2:5]]
             elif b"(latitude)" in linedat:
@@ -124,3 +102,57 @@ def get_dates_in_range(start_date: datetime, duration: timedelta) -> Iterable[da
         dates.append(last_date)
         last_date += timedelta(days=1)
     return dates
+
+
+BUTTER_MIN_LENGTH = 28
+
+
+def butter_bandpass_filter(
+    data: numpy.ndarray,
+    lowcut: float,
+    highcut: float,
+    samplerate: float,
+    order: int = 2,
+):
+    """
+    Generic Butterworth bandpass filter function
+    https://stackoverflow.com/questions/12093594/how-to-implement-band-pass-butterworth-filter-with-scipy-signal-butter
+
+    Args:
+        data: 1D numpy array of data at 1 sample per DATA_RATE time
+        lowcut: frequency (in Hz) below which to attenuate
+        highcut: frequency (in Hz) below which to attenuate
+        samplerate: sampling rate frequency (in Hz) of the incoming data
+        order: the order of the polynomial or whatever to use for filtering the data
+
+    Returns:
+        1D numpy array of the filtered data, or None if there wasn't enough data to properly filter
+    """
+    nyq = 0.5 * samplerate
+    lowf = lowcut / nyq
+    highf = highcut / nyq
+    # generic names for coefficients in filters
+    # pylint: disable=invalid-name
+    a, b = butter(order, [lowf, highf], btype="band")
+    if len(data) < BUTTER_MIN_LENGTH:
+        return None
+    return filtfilt(a, b, data)
+
+
+def bpfilter(
+    data: numpy.ndarray, short_min: float = 2, long_min: float = 12
+) -> Optional[numpy.ndarray]:
+    """
+    Perform a 2nd-order Butterworth Bandpass filter on the given data
+
+    Args:
+        data: 1D numpy array of data at 1 sample per DATA_RATE time
+        short_min: attenuate signals with periods below this many minutes
+        long_min: attenuate signals with periods above this many minutes
+
+    Returns:
+        1D numpy array of the filtered data, or None if there wasn't enough data to properly filter
+    """
+    return butter_bandpass_filter(
+        data, 1 / (long_min * 60), 1 / (short_min * 60), 1 / DATA_RATE
+    )

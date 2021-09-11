@@ -3,10 +3,13 @@ python_version = "3.8"
 
 [[tool.mypy.overrides]]
 module = [
+    "h5py",
     "laika",
     "laika.*",
     "numpy",
     "ruptures",
+    "setuptools",
+    "scipy",
 ]
 ignore_missing_imports = true
 
