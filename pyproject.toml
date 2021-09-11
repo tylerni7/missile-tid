@@ -10,7 +10,7 @@ module = [
     "laika",
     "laika.*",
     "matplotlib",
-    "numpy",
+    "pytest",
     "ruptures",
     "setuptools",
     "scipy",

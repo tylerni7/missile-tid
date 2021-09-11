@@ -2,7 +2,6 @@
 Common datatypes, so we can have functions be more clear about
 return values than saying "numpy.array"
 """
-from abc import ABC
 from typing import Dict, TypeVar
 
 import numpy

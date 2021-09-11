@@ -14,7 +14,7 @@ jobs:
           # versions. Explicitly upgrade them because they often create
           # installation problems if out of date.
           python -m pip install --upgrade pip setuptools numpy
-          python -m pip install types-PyYAML
+          python -m pip install types-PyYAML types-requests
 
           pip install mypy
       - name: Run mypy
