@@ -3,13 +3,18 @@ python_version = "3.8"
 
 [[tool.mypy.overrides]]
 module = [
+    "awkward",
+    "cartopy",
+    "cartopy.feature",
     "h5py",
     "laika",
     "laika.*",
-    "numpy",
+    "matplotlib",
+    "pytest",
     "ruptures",
     "setuptools",
     "scipy",
+    "scipy.signal",
 ]
 ignore_missing_imports = true
 
