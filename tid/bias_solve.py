@@ -20,7 +20,7 @@ from __future__ import annotations  # defer type annotations due to circular stu
 
 from abc import ABC, abstractmethod
 from collections import Counter
-from typing import TYPE_CHECKING, Dict, Iterable, List, Tuple
+from typing import TYPE_CHECKING, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy
 from scipy import optimize, sparse
@@ -83,6 +83,11 @@ def _sparse_lsq_solve(
     return optimize.lsq_linear(matrix_a, matrix_b).x
 
 
+EntryVector = Tuple[
+    float, Tuple[float, float, float], float, int, int, float, Optional[int]
+]
+
+
 class SimpleBiasSolver(BiasSolver):
     """
     This bias solved just looks for points which are coincidental.
@@ -110,7 +115,9 @@ class SimpleBiasSolver(BiasSolver):
             sats |= set(station_dict.keys())
         return sats
 
-    def _add_connection(self, connection: Connection, entries: List[Tuple]) -> None:
+    def _add_connection(
+        self, connection: Connection, entries: List[EntryVector]
+    ) -> None:
         """
         Add the data from the given connection to the matrices for the LSQ bias calculation
 
@@ -132,7 +139,7 @@ class SimpleBiasSolver(BiasSolver):
 
         # we can average out data and prevent extra entries by stashing stuff for the same
         # tec measurement together
-        holding_cell = {}
+        holding_cell: Dict[Tuple[float, float, float], List[Tuple[float, float]]] = {}
         for tick, (lat, lon), (vtec, slant) in zip(
             rounded_ticks, rounded_lat_lons, connection.vtecs.T
         ):
@@ -160,7 +167,7 @@ class SimpleBiasSolver(BiasSolver):
             )
 
     def _coalesce_entries(
-        self, entries: List[Tuple]
+        self, entries: Sequence[EntryVector]
     ) -> Tuple[numpy.ndarray, numpy.ndarray]:
         """
         In _add_connection, we used python lists temporarily to store data.
@@ -272,7 +279,7 @@ class SimpleBiasSolver(BiasSolver):
             dictionary mapping station names to their bias vectors (GPS, GLONASS_0, GLONASS_1)
         """
 
-        entries = []
+        entries: List[EntryVector] = []
         for prn_map in self.scenario.conn_map.values():
             for conn_tick_map in prn_map.values():
                 for connection in conn_tick_map.connections:

@@ -41,5 +41,5 @@ conf.logger.debug("Connections created, resolving biases")
 sc.solve_biases()
 
 conf.logger.debug("Preparing animation")
-extent = [-128, -115, 29.6, 38.1]
+extent = (-128, -115, 29.6, 38.1)
 plot.plot_map(sc, extent=extent, frames=range(1600, 1800))

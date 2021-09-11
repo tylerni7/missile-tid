@@ -7,7 +7,7 @@ from __future__ import annotations  # defer type annotations due to circular stu
 
 from datetime import datetime, timedelta
 from functools import lru_cache
-from typing import Dict, Iterable, Optional, Sequence, Tuple, Union
+from typing import cast, Dict, Iterable, Optional, Sequence, Tuple, Union
 from pathlib import Path
 import hashlib
 
@@ -85,9 +85,9 @@ def _populate_data(
     """
 
     # dict of station names -> XYZ ECEF locations in meters
-    station_locs: Dict[str, Iterable[float]] = {}
+    station_locs: Dict[str, types.ECEF_XYZ] = {}
     # dict of station names -> dict of prn -> numpy observation data
-    station_data: types.StationPrnMap[numpy.array] = {}
+    station_data = cast(types.StationPrnMap[numpy.ndarray], {})
 
     gps_start = GPSTime.from_datetime(date_list[0])
 
@@ -164,7 +164,7 @@ class Scenario:
         # by some weird convention I don't get, these have opposite signs applied to them
         self.bias_solver: Optional[bias_solve.BiasSolver] = None
         self.sat_biases: Dict[str, float] = {}
-        self.rcvr_biases: Dict[str, float] = {}
+        self.rcvr_biases: Dict[str, Tuple[float, float, float]] = {}
 
     def to_hdf5(self, fname: Path, *, overwrite=False) -> None:
         """
@@ -212,7 +212,13 @@ class Scenario:
             }
             station_locs = {station: ds[:] for station, ds in fin["loc"].items()}
 
-        return cls(start_date, duration, station_locs, station_data, dog)
+        return cls(
+            start_date,
+            duration,
+            station_locs,
+            cast(types.StationPrnMap[types.DenseDataType], station_data),
+            dog,
+        )
 
     @classmethod
     def from_daterange(
@@ -341,8 +347,8 @@ class Scenario:
             map of station -> prn -> filtered vtec data, one per tick
             map of station -> prn -> (lat, lon values or None if no data), one per tick
         """
-        vtecs = {}
-        ipps = {}
+        vtecs = cast(types.StationPrnMap[Sequence[float]], {})
+        ipps = cast(types.StationPrnMap[Sequence[Optional[Tuple[float, float]]]], {})
         for station in self.conn_map.keys():
             for prn in self.conn_map[station].keys():
                 if not self.conn_map[station][prn].connections:

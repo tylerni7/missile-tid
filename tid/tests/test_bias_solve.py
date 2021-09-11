@@ -4,7 +4,7 @@ Tests for bias solving routines
 from dataclasses import dataclass
 import random
 from tid import bias_solve
-from typing import Dict, List
+from typing import cast, Any, Dict, List
 
 import numpy
 
@@ -64,7 +64,7 @@ def generate_data(station_count=4, sat_count=4, duration=240):
     # pick TECu values for each IPP and each tick
     TEC_truths = numpy.random.rand(duration, 16) * 50
 
-    connection_data = dict()
+    connection_data = cast(Dict[str, Dict[str, Any]], {})
     for station in stations:
         connection_data[station] = dict()
         for sat in sats:
@@ -73,7 +73,7 @@ def generate_data(station_count=4, sat_count=4, duration=240):
             ticks = numpy.arange(duration)
 
             is_glonass = sat_glonass[sat] is not None
-            glonass_chan = sat_glonass[sat] if is_glonass else 0
+            glonass_chan = sat_glonass[sat] or 0
 
             for tick in ticks:
                 # pick a location

@@ -83,7 +83,7 @@ def station_location_from_rinex(rinex_path: str) -> Optional[Sequence]:
     return None
 
 
-def get_dates_in_range(start_date: datetime, duration: timedelta) -> Iterable[datetime]:
+def get_dates_in_range(start_date: datetime, duration: timedelta) -> Sequence[datetime]:
     """
     Get a list of dates, starting with start_date, each 1 day apart
 

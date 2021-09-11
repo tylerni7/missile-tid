@@ -4,6 +4,7 @@ between satellites and ground stations.
 Things to manage those are stored here
 """
 from __future__ import annotations  # defer type annotations due to circular stuff
+import collections
 from functools import cached_property
 from typing import (
     TYPE_CHECKING,
@@ -12,6 +13,7 @@ from typing import (
     Iterable,
     Optional,
     Sequence,
+    Set,
     Tuple,
     Union,
 )
@@ -70,7 +72,7 @@ class Connection:
         self.tick_start = scenario.station_data[station][prn][idx_start]["tick"]
         self.tick_end = scenario.station_data[station][prn][idx_end]["tick"]
 
-        self.missing_ticks = set()
+        self.missing_ticks: Set[int] = set()
         self._init_missing_ticks()
 
         # integer ambiguities, the phase correction information
@@ -266,7 +268,7 @@ class Connection:
         return tec.calculate_vtecs(self)
 
 
-class SparseList:
+class SparseList(collections.Sequence):
     """
     Helper to represent data from connections where we may be missing stuff
     Don't store all those 0s!
@@ -295,7 +297,7 @@ class SparseList:
         """
         return self.max + 1
 
-    def __getitem__(self, tick: int) -> Any:
+    def __getitem__(self, tick: Any) -> Any:
         """
         Fetch the given tick data
 
@@ -304,7 +306,13 @@ class SparseList:
 
         Returns:
             the data associated with that tick, or the default value if it was not found
+
+        Raises:
+            IndexError if the tick is not an integer
         """
+        if type(tick) is not int:
+            raise IndexError
+
         for data_range, datum, tick_lookup in zip(
             self.ranges, self.data, self.tick_lookup
         ):
@@ -369,7 +377,10 @@ class ConnTickMap:
                 # not enough data to filter
                 continue
             index_ranges.append((con.tick_start, con.tick_end))
-            data.append(util.bpfilter(con.vtecs[0]))
+            filtered = util.bpfilter(con.vtecs[0])
+            if filtered is None:
+                continue
+            data.append(filtered)
             tick_lookup.append(con.tick_idx)
         return SparseList(index_ranges, data, tick_lookup)
 

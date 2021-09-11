@@ -61,13 +61,13 @@ def plot_map(
                 vals.append(vtec_map[station][prn][i])
 
         scatter.set_offsets(numpy.array((lons, lats)).T)
-        vals = numpy.array(vals)
-        if len(vals) > 0:
+        nvals = numpy.array(vals)
+        if len(nvals) > 0:
             # re-center about 0 and clip
-            vals = numpy.clip(vals + TID_SCALE, 0, TID_SCALE * 2)
+            nvals = numpy.clip(nvals + TID_SCALE, 0, TID_SCALE * 2)
             # normalize data from 0 to 1
-            vals /= TID_SCALE * 2
-            scatter.set_color(cm.plasma(vals))
+            nvals /= TID_SCALE * 2
+            scatter.set_color(cm.plasma(nvals))
 
     def init():
         scatter.set_offsets([])
