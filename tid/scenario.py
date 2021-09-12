@@ -105,14 +105,15 @@ def _populate_data(
                 station_data[station] = dense_data.merge_data(
                     station_data[station], latest_data
                 )
-            if station not in station_locs:
-                station_locs[station] = get_data.location_for_station(
-                    dog, gps_date, station
-                )
 
         # didn't download data, ignore it
         if station not in station_data:
             continue
+
+        if station not in station_locs:
+            station_locs[station] = get_data.location_for_station(
+                dog, gps_date, station
+            )
 
         for prn, obs_data in station_data[station].items():
             _correct_satellite_info(dog, prn, obs_data)
@@ -251,9 +252,12 @@ class Scenario:
         if use_cache and cache_path.exists():
             return cls.from_hdf5(cache_path, dog=dog)
 
-        date_list = _get_dates_in_range(start_date, duration)
+        # date_list = _get_dates_in_range(start_date, duration)
         stations = set(stations)
-        locs, data = _populate_data(stations, date_list, dog)
+        locs, data = dense_data.populate_data(
+            stations, GPSTime.from_datetime(start_date), duration, dog
+        )
+        # locs, data = _populate_data(stations, date_list, dog)
         scn = cls(start_date, duration, locs, data, dog)
 
         if use_cache:
@@ -418,9 +422,8 @@ class Scenario:
             the integer channel on which this satellite is operating, or none if it
             could not be found
         """
-        time = GPSTime(
-            week=int(observations[0]["recv_time_week"]),
-            tow=observations[0]["recv_time_sec"],
+        time = GPSTime.from_datetime(self.start_date) + util.DATA_RATE * int(
+            observations[0]["tick"]
         )
         return self.dog.get_glonass_channel(prn, time)
 
@@ -437,9 +440,8 @@ class Scenario:
         Returns:
             the channel 1 and 2 frequencies in Hz, or None if they could not be found
         """
-        time = GPSTime(
-            week=int(observations[0]["recv_time_week"]),
-            tow=float(observations[0]["recv_time_sec"]),
+        time = GPSTime.from_datetime(self.start_date) + util.DATA_RATE * int(
+            observations[0]["tick"]
         )
         f1, f2 = [self.dog.get_frequency(prn, time, band) for band in ("C1C", "C2C")]
         # if the lookup didn't work, we can't proceed
@@ -506,15 +508,16 @@ class Scenario:
             )
             ruptures_bkpoints |= set(bkpts)
 
-        # and one for the last section
-        start = bkpoint_list[-1]
-        bkpoint = len(observations) - 1
-        count = bkpoint - start
-        if count >= MIN_CON_LENGTH:
-            bkpts = binseg.fit_predict(
-                mw_signal[start:bkpoint], pen=count / numpy.log(count)
-            )
-            ruptures_bkpoints |= set(bkpts)
+        if len(bkpoint_list) > 0:
+            # and one for the last section
+            start = bkpoint_list[-1]
+            bkpoint = len(observations) - 1
+            count = bkpoint - start
+            if count >= MIN_CON_LENGTH:
+                bkpts = binseg.fit_predict(
+                    mw_signal[start:bkpoint], pen=count / numpy.log(count)
+                )
+                ruptures_bkpoints |= set(bkpts)
 
         # include everything EXCEPT for these points
         # and separate chunks by these points
@@ -541,19 +544,20 @@ class Scenario:
                     bkpoint - 1,
                 )
             )
-        start = partition_points[-1] + 1
-        bkpoint = len(observations) - 1
-        count = bkpoint - start
-        if count >= MIN_CON_LENGTH:
-            connections.append(
-                Connection(
-                    self,
-                    station,
-                    prn,
-                    start,
-                    bkpoint,
+        if len(partition_points) > 0:
+            start = partition_points[-1] + 1
+            bkpoint = len(observations) - 1
+            count = bkpoint - start
+            if count >= MIN_CON_LENGTH:
+                connections.append(
+                    Connection(
+                        self,
+                        station,
+                        prn,
+                        start,
+                        bkpoint,
+                    )
                 )
-            )
 
         return connections
 

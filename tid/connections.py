@@ -285,7 +285,7 @@ class SparseList(collections.Sequence):
         self.data = data
         self.tick_lookup = tick_lookup
         self.default = default
-        self.max = max(i[1] for i in index_ranges)
+        self.max = 0 if len(index_ranges) == 0 else max(i[1] for i in index_ranges)
 
     def __len__(self) -> int:
         """

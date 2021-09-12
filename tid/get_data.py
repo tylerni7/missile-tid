@@ -309,3 +309,29 @@ def data_for_station(
 
     obs_data = RINEXFile(rinex_obs_file, rate=util.DATA_RATE)
     return raw_gnss.read_rinex_obs(obs_data)
+
+
+def data_for_station(
+    dog: AstroDog, time: GPSTime, station_name: str
+) -> Sequence[Sequence[GNSSMeasurement]]:
+    """
+    Get data from a particular station and time. Wraps a number of laika function calls.
+
+    Args:
+        dog: laika AstroDog object
+        time: laika GPSTime object for the time in question
+        station_name: string of the station in question
+            station names are CORS names or similar (eg: 'slac')
+
+    Returns:
+        raw_rinex data
+
+    Raises:
+        DownloadError if the data could not be fetched
+    """
+    rinex_obs_file = rinex_file_for_station(dog, time, station_name)
+    if rinex_obs_file is None:
+        raise DownloadError
+
+    obs_data = RINEXFile(rinex_obs_file, rate=util.DATA_RATE)
+    return raw_gnss.read_rinex_obs(obs_data)
