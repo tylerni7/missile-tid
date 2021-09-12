@@ -31,11 +31,17 @@ class ECEF_XYZ(numpy.ndarray):
 class ECEF_XYZ_LIST(numpy.ndarray):
     """
     numpy array of a list of ECEF XYZ coordinate in meters
-    shape: (1,3)
+    shape: (n,3)
     """
 
 
 class DenseDataType(numpy.ndarray):
     """
-    numpy array of type dense_data.DENSE_TYPE
+    numpy array of type get_data.DENSE_TYPE
+    """
+
+
+class DenseMeasurements(Dict[str, DenseDataType]):
+    """
+    Dictionary of PRN -> array of dense data
     """

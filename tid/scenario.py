@@ -22,7 +22,7 @@ from laika.rinex_file import DownloadError
 
 from tid.config import Configuration
 from tid.connections import Connection, ConnTickMap
-from tid import bias_solve, dense_data, get_data, tec, types, util
+from tid import bias_solve, get_data, tec, types, util
 
 from tid.util import get_dates_in_range as _get_dates_in_range
 
@@ -95,14 +95,14 @@ def _populate_data(
         for date in date_list:
             gps_date = GPSTime.from_datetime(date)
             try:
-                latest_data = dense_data.dense_data_for_station(dog, gps_date, station)
+                latest_data = get_data.data_for_station(dog, gps_date, station)
             except DownloadError:
                 continue
             if station not in station_data:
                 station_data[station] = latest_data
             else:
                 # we've already got some data, so merge it together
-                station_data[station] = dense_data.merge_data(
+                station_data[station] = get_data.merge_data(
                     station_data[station], latest_data
                 )
 
@@ -254,7 +254,7 @@ class Scenario:
 
         # date_list = _get_dates_in_range(start_date, duration)
         stations = set(stations)
-        locs, data = dense_data.populate_data(
+        locs, data = get_data.populate_data(
             stations, GPSTime.from_datetime(start_date), duration, dog
         )
         # locs, data = _populate_data(stations, date_list, dog)

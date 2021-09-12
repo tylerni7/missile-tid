@@ -1,17 +1,19 @@
 """
 Functions to help with download and basic processing of GPS data
 """
-from datetime import datetime
+from datetime import datetime, timedelta
 import io
 import json
 import logging
 import os
 import re
-from typing import Iterable, Optional, Sequence
+from typing import cast, Dict, Iterable, Optional, Sequence, Tuple
 import zipfile
 
 import numpy
 import requests
+
+import georinex
 
 from laika import AstroDog, raw_gnss
 from laika.dgps import get_station_position
@@ -20,10 +22,19 @@ from laika.gps_time import GPSTime
 from laika.raw_gnss import GNSSMeasurement
 from laika.rinex_file import RINEXFile, DownloadError
 
-from tid import types, util
+from tid import tec, types, util
 
 
 LOG = logging.getLogger(__name__)
+
+DENSE_TYPE = [
+    ("tick", "i4"),  # tick number the observation was made
+    ("C1C", "f8"),  # GNSS measurements, if available
+    ("C2C", "f8"),
+    ("L1C", "f8"),
+    ("L2C", "f8"),
+    ("sat_pos", "3f8"),  # satellite position XYZ ECEF in meters
+]
 
 # ecef locations for stations, so we can know what is nearby
 with open(
@@ -285,53 +296,197 @@ def location_for_station(
     return station_pos
 
 
-def data_for_station(
-    dog: AstroDog, time: GPSTime, station_name: str
-) -> Sequence[Sequence[GNSSMeasurement]]:
+def from_xarray(xarray, start_date: GPSTime) -> types.DenseMeasurements:
     """
-    Get data from a particular station and time. Wraps a number of laika function calls.
+    Convert the georinex xarray for a satellite to DenseMeasurements
+
+    Args:
+        xarray: the georinex xarray thing
+        start_date: time at which tick 0 occurred
+
+    Returns:
+        DenseMeasurements for the satellite
+    """
+    # truncate to observations with data
+    xarray = xarray.dropna("time", how="all", subset=["C1"])
+    outp = numpy.zeros(xarray.dims["time"], dtype=DENSE_TYPE)
+
+    obs_map = {"C1C": "C1", "C2C": "C2", "C2P": "P2", "L1C": "L1", "L2C": "L2"}
+    for obs in ["C1C", "C2C", "L1C", "L2C"]:
+        # if the channel doesn't exist, set to NaN
+        if obs_map[obs] not in xarray:
+            outp[obs][:] = numpy.nan
+        else:
+            outp[obs][:] = xarray[obs_map[obs]]
+
+    # if the C2C channel is empty/crap, replace it with C2P
+    if numpy.all(numpy.isnan(outp["C2C"])):
+        outp["C2C"][:] = xarray[obs_map["C2P"]]
+
+    timedeltas = xarray["time"].astype(numpy.datetime64).to_numpy() - numpy.datetime64(
+        start_date.as_datetime()
+    )
+    outp["tick"] = (timedeltas / numpy.timedelta64(util.DATA_RATE, "s")).astype(int)
+    return outp
+
+
+def data_for_station(
+    dog: AstroDog,
+    time: GPSTime,
+    station_name: str,
+    start_date: GPSTime,
+) -> types.DenseMeasurements:
+    """
+    Get data from a particular station and time. Wrapper for data_for_station
+    inside of get_data
 
     Args:
         dog: laika AstroDog object
         time: laika GPSTime object for the time in question
-        station_name: string of the station in question
-            station names are CORS names or similar (eg: 'slac')
 
     Returns:
-        raw_rinex data
+        dense raw gps data
 
     Raises:
         DownloadError if the data could not be fetched
+
+    TODO: caching of the results on disk? or should that happen later?
     """
     rinex_obs_file = rinex_file_for_station(dog, time, station_name)
     if rinex_obs_file is None:
         raise DownloadError
 
-    obs_data = RINEXFile(rinex_obs_file, rate=util.DATA_RATE)
-    return raw_gnss.read_rinex_obs(obs_data)
+    rinex = georinex.load(rinex_obs_file, interval=30)
+
+    sv_dict_out: Dict[str, types.DenseDataType] = {}
+    for sv in rinex.sv.to_numpy():
+        sv_dict_out[sv] = from_xarray(rinex.sel(sv=sv), start_date)
+    return sv_dict_out
 
 
-def data_for_station(
-    dog: AstroDog, time: GPSTime, station_name: str
-) -> Sequence[Sequence[GNSSMeasurement]]:
+def populate_sat_info(
+    dog: AstroDog,
+    start_time: GPSTime,
+    duration: timedelta,
+    station_dict: types.StationPrnMap[types.DenseMeasurements],
+) -> None:
     """
-    Get data from a particular station and time. Wraps a number of laika function calls.
+    Populate the satellite locations for our measurements
 
     Args:
-        dog: laika AstroDog object
-        time: laika GPSTime object for the time in question
-        station_name: string of the station in question
-            station names are CORS names or similar (eg: 'slac')
+        dog: laika AstroDog to use
+        start_time: when the 0th tick occurs
+        duration: how long until the last tick
+        station_dict: mapping to the DenseMeasurements that need correcting
+    """
+
+    satellites = {sat: idx for idx, sat in enumerate(dog.get_all_sat_info(start_time))}
+    tick_count = int(duration.total_seconds() / util.DATA_RATE)
+    # get an accurate view of the satellites at 30 second intervals
+    sat_info = numpy.zeros(
+        (len(satellites), tick_count), dtype=[("pos", "3f8"), ("vel", "3f8")]
+    )
+
+    for tick in range(tick_count):
+        tick_info = dog.get_all_sat_info(start_time + util.DATA_RATE * tick)
+        for sv, info in tick_info.items():
+            sat_info[satellites[sv]][tick] = (info[0], info[1])
+
+    bad_datas = set()
+    for station in station_dict:
+        for sat in station_dict[station]:
+            if sat not in satellites:
+                # no info for this satellite, probably not orbiting, remove it
+                bad_datas.add((station, sat))
+                continue
+            ticks = station_dict[station][sat]["tick"]
+            time_delays = station_dict[station][sat]["C1C"] / tec.C
+            delta_pos = (
+                sat_info[satellites[sat]]["vel"][ticks] * time_delays[:, numpy.newaxis]
+            )
+            corrected_pos = sat_info[satellites[sat]]["pos"][ticks] - delta_pos
+            station_dict[station][sat]["sat_pos"][:] = corrected_pos
+
+    for station, sat in bad_datas:
+        del station_dict[station][sat]
+
+
+def merge_data(
+    data1: types.DenseMeasurements, data2: types.DenseMeasurements
+) -> types.DenseMeasurements:
+    """
+    Merges two sets of dense measurements together
+
+    Args:
+        data1: the first (chronologically) set of data
+        data2: the second (chronologically) set of data
 
     Returns:
-        raw_rinex data
-
-    Raises:
-        DownloadError if the data could not be fetched
+        the combined data
     """
-    rinex_obs_file = rinex_file_for_station(dog, time, station_name)
-    if rinex_obs_file is None:
-        raise DownloadError
+    combined = data1.copy()
+    for prn in data2:
+        # prn only has data in the second dataset
+        if prn not in data1:
+            combined[prn] = data2[prn]
+        # otherwise we need an actual merge
+        else:
+            combined[prn] = numpy.append(data1[prn], data2[prn])
 
-    obs_data = RINEXFile(rinex_obs_file, rate=util.DATA_RATE)
-    return raw_gnss.read_rinex_obs(obs_data)
+    return combined
+
+
+def populate_data(
+    stations: Iterable[str],
+    start_date: GPSTime,
+    duration: timedelta,
+    dog: AstroDog,
+) -> Tuple[Dict[str, types.ECEF_XYZ], types.StationPrnMap[types.DenseDataType]]:
+    """
+    Download/populate the station data and station location info
+
+    Args:
+        stations: list of station names
+        date_list: ordered list of the dates for which to fetch data
+        dog: astro dog to use
+
+    Returns:
+        dictionary of station names to their locations,
+        dictionary of station names to sat names to their dense data
+
+    TODO: is this a good place to be caching results?
+    """
+
+    # dict of station names -> XYZ ECEF locations in meters
+    station_locs: Dict[str, types.ECEF_XYZ] = {}
+    # dict of station names -> dict of prn -> numpy observation data
+    station_data = cast(types.StationPrnMap[types.DenseDataType], {})
+
+    for station in stations:
+        gps_date = start_date
+        while gps_date < start_date + duration.total_seconds():
+            tick = int((gps_date - start_date) // util.DATA_RATE)
+            try:
+                latest_data = data_for_station(
+                    dog, gps_date, station, start_date=start_date
+                )
+            except DownloadError:
+                continue
+            finally:
+                gps_date += (1 * util.DAYS).total_seconds()
+            if station not in station_data:
+                station_data[station] = latest_data
+            else:
+                # we've already got some data, so merge it together
+                station_data[station] = merge_data(station_data[station], latest_data)
+
+        # didn't download data, ignore it
+        if station not in station_data:
+            continue
+
+        if station not in station_locs:
+            station_locs[station] = location_for_station(dog, gps_date, station)
+
+    populate_sat_info(dog, start_date, duration, station_data)
+
+    return station_locs, station_data
