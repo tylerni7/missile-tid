@@ -16,6 +16,12 @@ from tid.scenario import Scenario
 TID_SCALE = 0.1
 
 
+def plot_filtered_vtec(scenario: Scenario, station, prn):
+    fig, ax = plt.subplots()
+    ax.plot(scenario.conn_map[station][prn].get_filtered_vtecs())
+    fig.show()
+
+
 def plot_map(
     scenario: Scenario,
     extent: Optional[Tuple[float, float, float, float]] = None,

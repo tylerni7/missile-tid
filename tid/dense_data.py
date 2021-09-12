@@ -28,8 +28,10 @@ DENSE_TYPE = [
 ]
 
 
-def from_xarray(xarray, tick_offset: int = 0) -> DenseMeasurements:
+def from_xarray(xarray, start_date: GPSTime) -> DenseMeasurements:
     """ """
+    # truncate to observations with data
+    xarray = xarray.dropna("time", how="all", subset=["C1"])
     outp = numpy.zeros(xarray.dims["time"], dtype=DENSE_TYPE)
 
     obs_map = {"C1C": "C1", "C2C": "C2", "C2P": "P2", "L1C": "L1", "L2C": "L2"}
@@ -44,15 +46,18 @@ def from_xarray(xarray, tick_offset: int = 0) -> DenseMeasurements:
     if numpy.all(numpy.isnan(outp["C2C"])):
         outp["C2C"][:] = xarray[obs_map["C2P"]]
 
-    # discard the empty slots (places where C1C is nan)
-    good_ticks = numpy.where(numpy.logical_not(numpy.isnan(outp["C1C"])))[0]
-    outp = outp[good_ticks]
-    outp["tick"] = good_ticks + tick_offset
+    timedeltas = xarray["time"].astype(numpy.datetime64).to_numpy() - numpy.datetime64(
+        start_date.as_datetime()
+    )
+    outp["tick"] = (timedeltas / numpy.timedelta64(util.DATA_RATE, "s")).astype(int)
     return outp
 
 
 def dense_data_for_station(
-    dog: AstroDog, time: GPSTime, station_name: str, tick_offset: int = 0
+    dog: AstroDog,
+    time: GPSTime,
+    station_name: str,
+    start_date: GPSTime,
 ) -> DenseMeasurements:
     """
     Get data from a particular station and time. Wrapper for data_for_station
@@ -78,7 +83,7 @@ def dense_data_for_station(
 
     sv_dict_out: Dict[str, types.DenseDataType] = {}
     for sv in rinex.sv.to_numpy():
-        sv_dict_out[sv] = from_xarray(rinex.sel(sv=sv), tick_offset=tick_offset)
+        sv_dict_out[sv] = from_xarray(rinex.sel(sv=sv), start_date)
     return sv_dict_out
 
 
@@ -152,12 +157,6 @@ def merge_data(data1: DenseMeasurements, data2: DenseMeasurements) -> DenseMeasu
     return combined
 
 
-def populate(dog, date, duration, stations):
-    station_table = {}
-    for sta in stations:
-        station_table[sta] = dense_data_for_station(dog, date, sta)
-
-
 def populate_data(
     stations: Iterable[str],
     start_date,
@@ -190,7 +189,7 @@ def populate_data(
             tick = int((gps_date - start_date) // util.DATA_RATE)
             try:
                 latest_data = dense_data_for_station(
-                    dog, gps_date, station, tick_offset=tick
+                    dog, gps_date, station, start_date=start_date
                 )
             except get_data.DownloadError:
                 continue

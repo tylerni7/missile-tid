@@ -297,6 +297,10 @@ class SparseList(collections.Sequence):
         """
         return self.max + 1
 
+    def __iter__(self) -> Iterable[Any]:
+        for i in range(self.max + 1):
+            yield self[i]
+
     def __getitem__(self, tick: Any) -> Any:
         """
         Fetch the given tick data
@@ -306,10 +310,10 @@ class SparseList(collections.Sequence):
 
         Returns:
             the data associated with that tick, or the default value if it was not found
-
-        Raises:
-            IndexError if the tick is not an integer
         """
+        if isinstance(tick, slice):
+            return [self[i] for i in range(tick.indices(len(self)))]
+
         if type(tick) is not int:
             raise IndexError
 

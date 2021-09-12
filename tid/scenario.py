@@ -159,7 +159,7 @@ class Scenario:
         self.station_locs = station_locs
         self.station_data = station_data
 
-        self.conn_map = conn_map
+        self.conn_map: Optional[types.StationPrnMap[ConnTickMap]] = conn_map
 
         # biases to be calculated of prn or station to clock bias in meters (C*time)
         # by some weird convention I don't get, these have opposite signs applied to them
