@@ -478,7 +478,7 @@ class Scenario:
         if len(self.conn_map):
             return
 
-        self.conn_map = {}
+        self.conn_map = cast(types.StationPrnMap[ConnTickMap], {})
         for station, svmap in self.station_data.items():
             self.conn_map[station] = {}
             for prn, observations in svmap.items():

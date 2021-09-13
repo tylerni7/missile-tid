@@ -15,7 +15,7 @@ import requests
 
 import georinex
 
-from laika import AstroDog, raw_gnss
+from laika import AstroDog
 from laika.dgps import get_station_position
 from laika.downloader import download_cors_station, download_and_cache_file
 from laika.gps_time import GPSTime
