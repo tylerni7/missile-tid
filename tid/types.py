@@ -35,13 +35,13 @@ class ECEF_XYZ_LIST(numpy.ndarray):
     """
 
 
-class DenseDataType(numpy.ndarray):
+class Observations(numpy.ndarray):
     """
     numpy array of type get_data.DENSE_TYPE
     """
 
 
-class DenseMeasurements(Dict[str, DenseDataType]):
+class DenseMeasurements(Dict[str, Observations]):
     """
     Dictionary of PRN -> array of dense data
     """

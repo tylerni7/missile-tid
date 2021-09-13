@@ -19,8 +19,7 @@ from laika import AstroDog, raw_gnss
 from laika.dgps import get_station_position
 from laika.downloader import download_cors_station, download_and_cache_file
 from laika.gps_time import GPSTime
-from laika.raw_gnss import GNSSMeasurement
-from laika.rinex_file import RINEXFile, DownloadError
+from laika.rinex_file import DownloadError
 
 from tid import tec, types, util
 
@@ -296,16 +295,16 @@ def location_for_station(
     return station_pos
 
 
-def from_xarray(xarray, start_date: GPSTime) -> types.DenseMeasurements:
+def from_xarray(xarray, start_date: GPSTime) -> types.Observations:
     """
-    Convert the georinex xarray for a satellite to DenseMeasurements
+    Convert the georinex xarray for a satellite to Observations
 
     Args:
         xarray: the georinex xarray thing
         start_date: time at which tick 0 occurred
 
     Returns:
-        DenseMeasurements for the satellite
+        Observations for the satellite
     """
     # truncate to observations with data
     xarray = xarray.dropna("time", how="all", subset=["C1"])
@@ -327,7 +326,7 @@ def from_xarray(xarray, start_date: GPSTime) -> types.DenseMeasurements:
         start_date.as_datetime()
     )
     outp["tick"] = (timedeltas / numpy.timedelta64(util.DATA_RATE, "s")).astype(int)
-    return outp
+    return cast(types.Observations, outp)
 
 
 def data_for_station(
@@ -358,9 +357,9 @@ def data_for_station(
 
     rinex = georinex.load(rinex_obs_file, interval=30)
 
-    sv_dict_out: Dict[str, types.DenseDataType] = {}
-    for sv in rinex.sv.to_numpy():
-        sv_dict_out[sv] = from_xarray(rinex.sel(sv=sv), start_date)
+    sv_dict_out = cast(types.DenseMeasurements, {})
+    for svid in rinex.sv.to_numpy():
+        sv_dict_out[svid] = from_xarray(rinex.sel(sv=svid), start_date)
     return sv_dict_out
 
 
@@ -368,7 +367,7 @@ def populate_sat_info(
     dog: AstroDog,
     start_time: GPSTime,
     duration: timedelta,
-    station_dict: types.StationPrnMap[types.DenseMeasurements],
+    station_dict: types.StationPrnMap[types.Observations],
 ) -> None:
     """
     Populate the satellite locations for our measurements
@@ -377,7 +376,7 @@ def populate_sat_info(
         dog: laika AstroDog to use
         start_time: when the 0th tick occurs
         duration: how long until the last tick
-        station_dict: mapping to the DenseMeasurements that need correcting
+        station_dict: mapping to the Observations that need correcting
     """
 
     satellites = {sat: idx for idx, sat in enumerate(dog.get_all_sat_info(start_time))}
@@ -389,8 +388,8 @@ def populate_sat_info(
 
     for tick in range(tick_count):
         tick_info = dog.get_all_sat_info(start_time + util.DATA_RATE * tick)
-        for sv, info in tick_info.items():
-            sat_info[satellites[sv]][tick] = (info[0], info[1])
+        for svid, info in tick_info.items():
+            sat_info[satellites[svid]][tick] = (info[0], info[1])
 
     bad_datas = set()
     for station in station_dict:
@@ -433,7 +432,7 @@ def merge_data(
         else:
             combined[prn] = numpy.append(data1[prn], data2[prn])
 
-    return combined
+    return cast(types.DenseMeasurements, combined)
 
 
 def populate_data(
@@ -441,7 +440,7 @@ def populate_data(
     start_date: GPSTime,
     duration: timedelta,
     dog: AstroDog,
-) -> Tuple[Dict[str, types.ECEF_XYZ], types.StationPrnMap[types.DenseDataType]]:
+) -> Tuple[Dict[str, types.ECEF_XYZ], types.StationPrnMap[types.Observations]]:
     """
     Download/populate the station data and station location info
 
@@ -460,12 +459,11 @@ def populate_data(
     # dict of station names -> XYZ ECEF locations in meters
     station_locs: Dict[str, types.ECEF_XYZ] = {}
     # dict of station names -> dict of prn -> numpy observation data
-    station_data = cast(types.StationPrnMap[types.DenseDataType], {})
+    station_data = cast(types.StationPrnMap[types.Observations], {})
 
     for station in stations:
         gps_date = start_date
         while gps_date < start_date + duration.total_seconds():
-            tick = int((gps_date - start_date) // util.DATA_RATE)
             try:
                 latest_data = data_for_station(
                     dog, gps_date, station, start_date=start_date
@@ -478,7 +476,11 @@ def populate_data(
                 station_data[station] = latest_data
             else:
                 # we've already got some data, so merge it together
-                station_data[station] = merge_data(station_data[station], latest_data)
+                # give mypy a hint here about our type aliases
+                station_data[station] = merge_data(
+                    cast(types.DenseMeasurements, station_data[station]),
+                    latest_data,
+                )
 
         # didn't download data, ignore it
         if station not in station_data:

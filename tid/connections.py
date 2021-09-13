@@ -11,6 +11,7 @@ from typing import (
     Any,
     Callable,
     Iterable,
+    Iterator,
     Optional,
     Sequence,
     Set,
@@ -155,7 +156,7 @@ class Connection:
         return numpy.arange(self.tick_start, self.tick_end + 1)
 
     @property
-    def observations(self) -> types.DenseDataType:
+    def observations(self) -> types.Observations:
         """
         Convenience function: returns the numpy arrays for the raw observations
         corresponding to this connection
@@ -276,7 +277,7 @@ class SparseList(collections.Sequence):
 
     def __init__(
         self,
-        index_ranges: Iterable[Tuple[int, int]],
+        index_ranges: Sequence[Tuple[int, int]],
         data: Iterable[Union[Sequence, numpy.ndarray]],
         tick_lookup: Iterable[Callable[[int], Optional[int]]],
         default: Any = 0.0,
@@ -297,7 +298,7 @@ class SparseList(collections.Sequence):
         """
         return self.max + 1
 
-    def __iter__(self) -> Iterable[Any]:
+    def __iter__(self) -> Iterator[Any]:
         for i in range(self.max + 1):
             yield self[i]
 
@@ -312,9 +313,9 @@ class SparseList(collections.Sequence):
             the data associated with that tick, or the default value if it was not found
         """
         if isinstance(tick, slice):
-            return [self[i] for i in range(tick.indices(len(self)))]
+            return [self[i] for i in range(*tick.indices(len(self)))]
 
-        if type(tick) is not int:
+        if not isinstance(tick, int):
             raise IndexError
 
         for data_range, datum, tick_lookup in zip(
