@@ -16,6 +16,23 @@ from tid.scenario import Scenario
 TID_SCALE = 0.1
 
 
+def plot_filtered_vtec(scenario: Scenario, station: str, prn: str):
+    """
+    Plot the TEC after being bandpass filtered
+
+    Args:
+        scenario: the scenario with the data
+        station: the station we want data for
+        prn: the satellite we want data for
+    """
+    fig, axis = plt.subplots()
+    axis.plot(scenario.conn_map[station][prn].get_filtered_vtecs())
+    plt.title(f"Station: {station} Satellite: {prn}")
+    plt.ylabel("vTEC")
+    plt.xlabel("Time (ticks)")
+    fig.show()
+
+
 def plot_map(
     scenario: Scenario,
     extent: Optional[Tuple[float, float, float, float]] = None,
@@ -34,12 +51,12 @@ def plot_map(
     Returns:
         animation object (in case you want to save a gif)
     """
-    ax = plt.axes(projection=cartopy.crs.PlateCarree())
-    ax.add_feature(cpf.COASTLINE)
-    scatter = ax.scatter([], [])
+    axis = plt.axes(projection=cartopy.crs.PlateCarree())
+    axis.add_feature(cpf.COASTLINE)
+    scatter = axis.scatter([], [])
     if extent is None:
         extent = scenario.get_extent()
-    ax.set_extent(extent)
+    axis.set_extent(extent)
 
     vtec_map, coord_map = scenario.get_filtered_vtec_data()
 

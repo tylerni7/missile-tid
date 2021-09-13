@@ -6,6 +6,7 @@ module = [
     "awkward",
     "cartopy",
     "cartopy.feature",
+    "georinex",
     "h5py",
     "laika",
     "laika.*",
@@ -28,3 +29,4 @@ min-public-methods=0
 # t for time
 # f1,f2 for frequencies
 good-names=['i,j,k,t,f1,f2']
+ignore=["tests"]

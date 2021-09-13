@@ -15,14 +15,13 @@ import ruptures
 import numpy
 import h5py
 
-from laika import AstroDog, constants
+from laika import AstroDog
 from laika.gps_time import GPSTime
 from laika.lib import coordinates
-from laika.rinex_file import DownloadError
 
 from tid.config import Configuration
 from tid.connections import Connection, ConnTickMap
-from tid import bias_solve, dense_data, get_data, tec, types, util
+from tid import bias_solve, get_data, tec, types, util
 
 from tid.util import get_dates_in_range as _get_dates_in_range
 
@@ -32,97 +31,6 @@ conf = Configuration()
 MIN_CON_LENGTH = 20  # 10 minutes worth of connection
 DISCON_TIME = 4  # cycle slip for >= 4 samples without info
 EL_CUTOFF = 0.25  # elevation cutoff in radians, shallower than this ignored
-
-
-def _correct_satellite_info(dog, prn, data: types.DenseDataType) -> None:
-    """
-    Go through the observables data and do small satellite correction fixing stuff
-
-    Args:
-        data: the observables data to correct for one satellite
-    """
-    # TODO handle (rare) wrap-around case where correction pushes us back a week!
-    adj_sec = data["recv_time_sec"] - data["C1C"] / constants.SPEED_OF_LIGHT
-    for i, entry in enumerate(data):
-
-        time_of_interest = GPSTime(week=int(entry["recv_time_week"]), tow=adj_sec[i])
-        sat_info = dog.get_sat_info(prn, time_of_interest)
-        # laika doesn't fall back to less-accurate NAV data if SP3 data is unavailable
-        # if sat_info is empty, we can try it ourselves
-        if sat_info is None:
-            eph = dog.get_nav(prn, time_of_interest)
-            if eph is None:
-                continue
-            sat_info = eph.get_sat_info(time_of_interest)
-
-        # if it's still empty, it's a lost cause
-        if sat_info is None:
-            continue
-        entry["sat_clock_err"] = sat_info[2]
-        entry["sat_pos"] = sat_info[0]
-        entry["sat_vel"] = sat_info[1]
-        entry["is_processed"] = True
-
-
-def _populate_data(
-    stations: Iterable[str],
-    date_list: Sequence[datetime],
-    dog: AstroDog,
-) -> Tuple[Dict[str, types.ECEF_XYZ], types.StationPrnMap[types.DenseDataType]]:
-    """
-    Download/populate the station data and station location info
-
-    Args:
-        stations: list of station names
-        date_list: ordered list of the dates for which to fetch data
-        dog: astro dog to use
-
-    Returns:
-        dictionary of station names to their locations,
-        dictionary of station names to sat names to their dense data
-
-    TODO: is this a good place to be caching results?
-    """
-
-    # dict of station names -> XYZ ECEF locations in meters
-    station_locs: Dict[str, types.ECEF_XYZ] = {}
-    # dict of station names -> dict of prn -> numpy observation data
-    station_data = cast(types.StationPrnMap[types.DenseDataType], {})
-
-    gps_start = GPSTime.from_datetime(date_list[0])
-
-    for station in stations:
-        for date in date_list:
-            gps_date = GPSTime.from_datetime(date)
-            try:
-                latest_data = dense_data.dense_data_for_station(dog, gps_date, station)
-            except DownloadError:
-                continue
-            if station not in station_data:
-                station_data[station] = latest_data
-            else:
-                # we've already got some data, so merge it together
-                station_data[station] = dense_data.merge_data(
-                    station_data[station], latest_data
-                )
-            if station not in station_locs:
-                station_locs[station] = get_data.location_for_station(
-                    dog, gps_date, station
-                )
-
-        # didn't download data, ignore it
-        if station not in station_data:
-            continue
-
-        for prn, obs_data in station_data[station].items():
-            _correct_satellite_info(dog, prn, obs_data)
-            obs_data["tick"] = (
-                (obs_data["recv_time_sec"] - gps_start.tow)
-                + (obs_data["recv_time_week"] - gps_start.week)
-                * gps_start.seconds_in_week
-            ) // 30
-
-    return station_locs, station_data
 
 
 class Scenario:
@@ -138,9 +46,9 @@ class Scenario:
         start_date: datetime,
         duration: timedelta,
         station_locs: Dict[str, types.ECEF_XYZ],
-        station_data: types.StationPrnMap[types.DenseDataType],
+        station_data: types.StationPrnMap[types.Observations],
         dog: AstroDog,
-        conn_map=None,
+        conn_map: Optional[types.StationPrnMap[ConnTickMap]] = None,
     ) -> None:
         """
         Internal / raw constructor, probably not for use by mortals
@@ -158,7 +66,10 @@ class Scenario:
         self.station_locs = station_locs
         self.station_data = station_data
 
-        self.conn_map = conn_map
+        if conn_map is None:
+            self.conn_map = cast(types.StationPrnMap[ConnTickMap], {})
+        else:
+            self.conn_map = conn_map
 
         # biases to be calculated of prn or station to clock bias in meters (C*time)
         # by some weird convention I don't get, these have opposite signs applied to them
@@ -216,7 +127,7 @@ class Scenario:
             start_date,
             duration,
             station_locs,
-            cast(types.StationPrnMap[types.DenseDataType], station_data),
+            cast(types.StationPrnMap[types.Observations], station_data),
             dog,
         )
 
@@ -251,9 +162,12 @@ class Scenario:
         if use_cache and cache_path.exists():
             return cls.from_hdf5(cache_path, dog=dog)
 
-        date_list = _get_dates_in_range(start_date, duration)
+        # date_list = _get_dates_in_range(start_date, duration)
         stations = set(stations)
-        locs, data = _populate_data(stations, date_list, dog)
+        locs, data = get_data.populate_data(
+            stations, GPSTime.from_datetime(start_date), duration, dog
+        )
+        # locs, data = _populate_data(stations, date_list, dog)
         scn = cls(start_date, duration, locs, data, dog)
 
         if use_cache:
@@ -404,7 +318,7 @@ class Scenario:
             fout.create_dataset("data", data=res, compression="gzip")
 
     def get_glonass_chan(
-        self, prn: str, observations: types.DenseDataType
+        self, prn: str, observations: types.Observations
     ) -> Optional[int]:
         """
         Get the GLONASS channel for this satellite for these observations
@@ -418,14 +332,13 @@ class Scenario:
             the integer channel on which this satellite is operating, or none if it
             could not be found
         """
-        time = GPSTime(
-            week=int(observations[0]["recv_time_week"]),
-            tow=observations[0]["recv_time_sec"],
+        time = GPSTime.from_datetime(self.start_date) + util.DATA_RATE * int(
+            observations[0]["tick"]
         )
         return self.dog.get_glonass_channel(prn, time)
 
     def get_frequencies(
-        self, prn: str, observations: types.DenseDataType
+        self, prn: str, observations: types.Observations
     ) -> Optional[Tuple[float, float]]:
         """
         Get the channel 1 and 2 frequencies corresponding to the given observations
@@ -437,9 +350,8 @@ class Scenario:
         Returns:
             the channel 1 and 2 frequencies in Hz, or None if they could not be found
         """
-        time = GPSTime(
-            week=int(observations[0]["recv_time_week"]),
-            tow=float(observations[0]["recv_time_sec"]),
+        time = GPSTime.from_datetime(self.start_date) + util.DATA_RATE * int(
+            observations[0]["tick"]
         )
         f1, f2 = [self.dog.get_frequency(prn, time, band) for band in ("C1C", "C2C")]
         # if the lookup didn't work, we can't proceed
@@ -451,7 +363,7 @@ class Scenario:
         self,
         station,
         prn,
-        observations: types.DenseDataType,
+        observations: types.Observations,
         el_cutoff: float = EL_CUTOFF,
     ) -> Iterable[Connection]:
         """
@@ -506,15 +418,16 @@ class Scenario:
             )
             ruptures_bkpoints |= set(bkpts)
 
-        # and one for the last section
-        start = bkpoint_list[-1]
-        bkpoint = len(observations) - 1
-        count = bkpoint - start
-        if count >= MIN_CON_LENGTH:
-            bkpts = binseg.fit_predict(
-                mw_signal[start:bkpoint], pen=count / numpy.log(count)
-            )
-            ruptures_bkpoints |= set(bkpts)
+        if len(bkpoint_list) > 0:
+            # and one for the last section
+            start = bkpoint_list[-1]
+            bkpoint = len(observations) - 1
+            count = bkpoint - start
+            if count >= MIN_CON_LENGTH:
+                bkpts = binseg.fit_predict(
+                    mw_signal[start:bkpoint], pen=count / numpy.log(count)
+                )
+                ruptures_bkpoints |= set(bkpts)
 
         # include everything EXCEPT for these points
         # and separate chunks by these points
@@ -541,19 +454,20 @@ class Scenario:
                     bkpoint - 1,
                 )
             )
-        start = partition_points[-1] + 1
-        bkpoint = len(observations) - 1
-        count = bkpoint - start
-        if count >= MIN_CON_LENGTH:
-            connections.append(
-                Connection(
-                    self,
-                    station,
-                    prn,
-                    start,
-                    bkpoint,
+        if len(partition_points) > 0:
+            start = partition_points[-1] + 1
+            bkpoint = len(observations) - 1
+            count = bkpoint - start
+            if count >= MIN_CON_LENGTH:
+                connections.append(
+                    Connection(
+                        self,
+                        station,
+                        prn,
+                        start,
+                        bkpoint,
+                    )
                 )
-            )
 
         return connections
 
@@ -561,10 +475,10 @@ class Scenario:
         """
         Generate and store our lists of connections
         """
-        if self.conn_map:
+        if len(self.conn_map):
             return
 
-        self.conn_map = {}
+        self.conn_map = cast(types.StationPrnMap[ConnTickMap], {})
         for station, svmap in self.station_data.items():
             self.conn_map[station] = {}
             for prn, observations in svmap.items():
@@ -574,6 +488,9 @@ class Scenario:
                 self.conn_map[station][prn] = ConnTickMap(cons)
 
     def solve_biases(self):
-        assert self.conn_map
+        """
+        Attempt to find the satellite and station clock biases for this scenario
+        """
+        assert len(self.conn_map) > 0
         self.bias_solver = bias_solve.SimpleBiasSolver(self)
         self.sat_biases, self.rcvr_biases = self.bias_solver.solve_biases()

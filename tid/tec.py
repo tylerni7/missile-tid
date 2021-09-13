@@ -29,7 +29,7 @@ C = constants.SPEED_OF_LIGHT
 
 def melbourne_wubbena(
     frequencies: Optional[Tuple[float, float]],
-    observations: types.DenseDataType,
+    observations: types.Observations,
 ) -> Optional[numpy.ndarray]:
     """
     Calculate the Melbourne Wubbena signal combination for these observations.
