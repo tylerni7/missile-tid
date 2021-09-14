@@ -267,6 +267,12 @@ class SimpleBiasSolver(BiasSolver):
                     self.total_tec_values + len(self.sats) + station_idx * 3,
                     slant_total,
                 )
+                # explicitly put in the 0 value to make sure the matrix size is correct
+                _mat_insert(
+                    measurements,
+                    self.total_tec_values + len(self.sats) + station_idx * 3 + 2,
+                    0,
+                )
             measurements += 1
 
         matrix_a_list = numpy.resize(matrix_a_list, matrix_a_size)

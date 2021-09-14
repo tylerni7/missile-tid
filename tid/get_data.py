@@ -193,6 +193,39 @@ def _download_korean_station(
     return filename
 
 
+def _download_japanese_station(
+    dog: AstroDog, time: GPSTime, station_name: str
+) -> Optional[str]:
+    """
+    Downloader for Japanese stations. Attempts to download rinex observables
+    for the given station and time.
+    Should only be used internally by data_for_station
+
+    Args:
+        dog: laika AstroDog object
+        time: laika GPSTime object
+        station_name: string representation a station name
+
+    Returns:
+        string representing a path to the downloaded file
+        or None, if the file was not able to be downloaded
+    """
+    cache_subdir = dog.cache_dir + "japanese_obs/"
+    t = time.as_datetime()
+    # different path formats...
+    folder_path = t.strftime("%Y/%j/")
+    filename = station_name + t.strftime("%j0.%yo")
+
+    url_bases = ("http://copyfighter.org:6670/japan/data/GR_2.11/",)
+    try:
+        filepath = download_and_cache_file(
+            url_bases, folder_path, cache_subdir, filename, compression=".gz"
+        )
+        return filepath
+    except IOError:
+        return None
+
+
 def cors_get_station_lists_for_day(date: datetime) -> Iterable[str]:
     """
     Given a date, returns the stations that the US CORS network
@@ -221,10 +254,12 @@ def rinex_file_for_station(
     Returns:
         the string containing the file path, or None
     """
-    rinex_obs_file = None
 
     # handlers for specific networks
-    handlers = {"Korea": _download_korean_station}
+    handlers = {
+        "Korea": _download_korean_station,
+        "Japan": _download_japanese_station,
+    }
 
     network = STATION_NETWORKS.get(station_name, None)
 
@@ -383,10 +418,10 @@ def populate_sat_info(
     tick_count = int(duration.total_seconds() / util.DATA_RATE)
     # get an accurate view of the satellites at 30 second intervals
     sat_info = numpy.zeros(
-        (len(satellites), tick_count), dtype=[("pos", "3f8"), ("vel", "3f8")]
+        (len(satellites), tick_count + 1), dtype=[("pos", "3f8"), ("vel", "3f8")]
     )
 
-    for tick in range(tick_count):
+    for tick in range(tick_count + 1):
         tick_info = dog.get_all_sat_info(start_time + util.DATA_RATE * tick)
         for svid, info in tick_info.items():
             sat_info[satellites[svid]][tick] = (info[0], info[1])
@@ -463,12 +498,19 @@ def populate_data(
 
     for station in stations:
         gps_date = start_date
-        while gps_date < start_date + duration.total_seconds():
+        while (gps_date) < start_date + duration.total_seconds():
             try:
                 latest_data = data_for_station(
                     dog, gps_date, station, start_date=start_date
                 )
+
+                if station not in station_locs:
+                    station_locs[station] = location_for_station(dog, gps_date, station)
+
             except DownloadError:
+                continue
+            except IndexError:
+                print("index error: ", station)
                 continue
             finally:
                 gps_date += (1 * util.DAYS).total_seconds()
@@ -485,9 +527,6 @@ def populate_data(
         # didn't download data, ignore it
         if station not in station_data:
             continue
-
-        if station not in station_locs:
-            station_locs[station] = location_for_station(dog, gps_date, station)
 
     populate_sat_info(dog, start_date, duration, station_data)
 
