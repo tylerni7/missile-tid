@@ -40,6 +40,14 @@ class Configuration:
             )
             self.logger = logging.getLogger("tid")
 
+            self.credentials = self.conf.get("credentials", {})
+
+        if self.credentials:
+            if "nasa_username" in self.credentials:
+                os.environ["NASA_USERNAME"] = self.credentials["nasa_username"]
+            if "nasa_password" in self.credentials:
+                os.environ["NASA_PASSWORD"] = self.credentials["nasa_password"]
+
 
 def set_global_config(config: Configuration) -> None:
     """
