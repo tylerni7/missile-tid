@@ -351,7 +351,7 @@ def from_xarray_sat(rinex: xarray.Dataset, start_date: GPSTime) -> types.Observa
         Observations for the satellite
     """
     # truncate to observations with data
-    rinex = xarray.dropna("time", how="all", subset=["C1"])
+    rinex = rinex.dropna("time", how="all", subset=["C1"])
     outp = numpy.zeros(rinex.dims["time"], dtype=DENSE_TYPE)
 
     obs_map = {"C1C": "C1", "C2C": "C2", "C2P": "P2", "L1C": "L1", "L2C": "L2"}
