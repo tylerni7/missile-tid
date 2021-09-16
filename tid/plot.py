@@ -33,6 +33,23 @@ def plot_filtered_vtec(scenario: Scenario, station: str, prn: str):
     fig.show()
 
 
+def plot_raw_vtec(scenario: Scenario, station: str, prn: str):
+    """
+    Plot the TEC with no filtering
+
+    Args:
+        scenario: the scenario with the data
+        station: the station we want data for
+        prn: the satellite we want data for
+    """
+    fig, axis = plt.subplots()
+    axis.plot(scenario.conn_map[station][prn].get_vtecs())
+    plt.title(f"Station: {station} Satellite: {prn}")
+    plt.ylabel("vTEC")
+    plt.xlabel("Time (ticks)")
+    fig.show()
+
+
 def plot_map(
     scenario: Scenario,
     extent: Optional[Tuple[float, float, float, float]] = None,
