@@ -339,7 +339,7 @@ def location_for_station(
     return station_pos
 
 
-def from_xarray_sat(xarray, start_date: GPSTime) -> types.Observations:
+def from_xarray_sat(rinex: xarray.Dataset, start_date: GPSTime) -> types.Observations:
     """
     Convert the georinex xarray for a satellite to Observations
 
@@ -351,22 +351,22 @@ def from_xarray_sat(xarray, start_date: GPSTime) -> types.Observations:
         Observations for the satellite
     """
     # truncate to observations with data
-    xarray = xarray.dropna("time", how="all", subset=["C1"])
-    outp = numpy.zeros(xarray.dims["time"], dtype=DENSE_TYPE)
+    rinex = xarray.dropna("time", how="all", subset=["C1"])
+    outp = numpy.zeros(rinex.dims["time"], dtype=DENSE_TYPE)
 
     obs_map = {"C1C": "C1", "C2C": "C2", "C2P": "P2", "L1C": "L1", "L2C": "L2"}
     for obs in ["C1C", "C2C", "L1C", "L2C"]:
         # if the channel doesn't exist, set to NaN
-        if obs_map[obs] not in xarray:
+        if obs_map[obs] not in rinex:
             outp[obs][:] = numpy.nan
         else:
-            outp[obs][:] = xarray[obs_map[obs]]
+            outp[obs][:] = rinex[obs_map[obs]]
 
     # if the C2C channel is empty/crap, replace it with C2P
     if numpy.all(numpy.isnan(outp["C2C"])):
-        outp["C2C"][:] = xarray[obs_map["C2P"]]
+        outp["C2C"][:] = rinex[obs_map["C2P"]]
 
-    timedeltas = xarray["time"].astype(numpy.datetime64).to_numpy() - numpy.datetime64(
+    timedeltas = rinex["time"].astype(numpy.datetime64).to_numpy() - numpy.datetime64(
         start_date.as_datetime()
     )
     outp["tick"] = (timedeltas / numpy.timedelta64(util.DATA_RATE, "s")).astype(int)
@@ -419,7 +419,7 @@ def data_for_station(
         raise DownloadError
 
     rinex = georinex.load(rinex_obs_file, interval=30)
-    return from_xarray(rinex)
+    return from_xarray(rinex, start_date)
 
 
 def populate_sat_info(
