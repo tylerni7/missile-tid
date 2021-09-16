@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 import io
 import json
 import logging
+import multiprocessing
 import os
 import re
 from typing import cast, Dict, Iterable, Optional, Sequence, Tuple
@@ -14,6 +15,7 @@ import numpy
 import requests
 
 import georinex
+import xarray
 
 from laika import AstroDog
 from laika.dgps import get_station_position
@@ -21,7 +23,7 @@ from laika.downloader import download_cors_station, download_and_cache_file
 from laika.gps_time import GPSTime
 from laika.rinex_file import DownloadError
 
-from tid import tec, types, util
+from tid import config, tec, types, util
 
 
 LOG = logging.getLogger(__name__)
@@ -35,6 +37,8 @@ DENSE_TYPE = [
     ("sat_pos", "3f8"),  # satellite position XYZ ECEF in meters
 ]
 
+DOWNLOAD_WORKERS = 20  # how many processes to spawn for downloading files
+
 # ecef locations for stations, so we can know what is nearby
 with open(
     os.path.dirname(__file__) + "/lookup_tables/station_locations.json", "rb"
@@ -46,6 +50,8 @@ with open(
     os.path.dirname(__file__) + "/lookup_tables/station_networks.json", "rb"
 ) as f:
     STATION_NETWORKS = json.load(f)
+
+conf = config.Configuration()
 
 
 def get_nearby_stations(
@@ -238,15 +244,15 @@ def cors_get_station_lists_for_day(date: datetime) -> Iterable[str]:
     return re.findall(pat, resp.text)
 
 
-def rinex_file_for_station(
-    dog: AstroDog, time: GPSTime, station_name: str
+def fetch_rinex_for_station(
+    dog: Optional[AstroDog], time: GPSTime, station_name: str
 ) -> Optional[str]:
     """
     Given a particular time and station, get the rinex obs file that
     corresponds to it
 
     Args:
-        dog: laika AstroDog object
+        dog: laika AstroDog object or None
         time: laika GPSTime object for the time in question
         station_name: string of the station in question
             station names are CORS names or similar (eg: 'slac')
@@ -254,6 +260,9 @@ def rinex_file_for_station(
     Returns:
         the string containing the file path, or None
     """
+
+    if dog is None:
+        dog = AstroDog(cache_dir=conf.cache_dir)
 
     # handlers for specific networks
     handlers = {
@@ -303,7 +312,7 @@ def location_for_station(
     Raises:
         DownloadError if the RINEX could not be fetched
     """
-    rinex_obs_file = rinex_file_for_station(dog, time, station_name)
+    rinex_obs_file = fetch_rinex_for_station(dog, time, station_name)
     if rinex_obs_file is None:
         raise DownloadError
 
@@ -330,7 +339,7 @@ def location_for_station(
     return station_pos
 
 
-def from_xarray(xarray, start_date: GPSTime) -> types.Observations:
+def from_xarray_sat(xarray, start_date: GPSTime) -> types.Observations:
     """
     Convert the georinex xarray for a satellite to Observations
 
@@ -364,6 +373,23 @@ def from_xarray(xarray, start_date: GPSTime) -> types.Observations:
     return cast(types.Observations, outp)
 
 
+def from_xarray(rinex: xarray.Dataset, start_date: GPSTime) -> types.DenseMeasurements:
+    """
+    Convert georinex's xarray format into our sparser format
+
+    Args:
+        rinex: the georinex xarray file
+        start_date: when tick 0 occurred
+
+    Returns:
+        dense raw gps data
+    """
+    sv_dict_out = cast(types.DenseMeasurements, {})
+    for svid in rinex.sv.to_numpy():
+        sv_dict_out[svid] = from_xarray_sat(rinex.sel(sv=svid), start_date)
+    return sv_dict_out
+
+
 def data_for_station(
     dog: AstroDog,
     time: GPSTime,
@@ -377,6 +403,8 @@ def data_for_station(
     Args:
         dog: laika AstroDog object
         time: laika GPSTime object for the time in question
+        station_name: the station for which we want data
+        start_date: when index 0 occurred
 
     Returns:
         dense raw gps data
@@ -386,16 +414,12 @@ def data_for_station(
 
     TODO: caching of the results on disk? or should that happen later?
     """
-    rinex_obs_file = rinex_file_for_station(dog, time, station_name)
+    rinex_obs_file = fetch_rinex_for_station(dog, time, station_name)
     if rinex_obs_file is None:
         raise DownloadError
 
     rinex = georinex.load(rinex_obs_file, interval=30)
-
-    sv_dict_out = cast(types.DenseMeasurements, {})
-    for svid in rinex.sv.to_numpy():
-        sv_dict_out[svid] = from_xarray(rinex.sel(sv=svid), start_date)
-    return sv_dict_out
+    return from_xarray(rinex)
 
 
 def populate_sat_info(
@@ -412,6 +436,8 @@ def populate_sat_info(
         start_time: when the 0th tick occurs
         duration: how long until the last tick
         station_dict: mapping to the Observations that need correcting
+
+    TODO: can numba (or something) help us parallelize the lower loops?
     """
 
     satellites = {sat: idx for idx, sat in enumerate(dog.get_all_sat_info(start_time))}
@@ -522,6 +548,113 @@ def populate_data(
                 station_data[station] = merge_data(
                     cast(types.DenseMeasurements, station_data[station]),
                     latest_data,
+                )
+
+        # didn't download data, ignore it
+        if station not in station_data:
+            continue
+
+    populate_sat_info(dog, start_date, duration, station_data)
+
+    return station_locs, station_data
+
+
+def download_and_process(argtuple: Tuple[GPSTime, str]) -> Optional[str]:
+    """
+    Fetch the data for a station at a date, return a path to the NetCDF4 version of it
+
+    Args:
+        argtuple: the date and station for which we want the data
+
+    Returns:
+        date requested, station requested, and the path to the nc file, or
+        None if it can't be retrieved
+    """
+    date, station = argtuple
+
+    # first search for already processed NetCDF4 files
+    path_name = date.as_datetime().strftime(f"%Y/%j/{station}%j0.%yo.nc")
+    for cache_folder in ["misc_igs_obs", "japanese_obs", "korean_obs", "cors_obs"]:
+        fname = f"{conf.cache_dir}/{cache_folder}/{path_name}"
+        if os.path.exists(fname):
+            return date, station, fname
+
+    rinex_obs_file = fetch_rinex_for_station(None, date, station)
+    if rinex_obs_file is not None:
+        if os.path.exists(rinex_obs_file + ".nc"):
+            return date, station, rinex_obs_file + ".nc"
+        rinex = georinex.load(rinex_obs_file, interval=30)
+        rinex["time"] = rinex.time.astype(numpy.datetime64)
+        rinex.to_netcdf(rinex_obs_file + ".nc")
+        return date, station, rinex_obs_file + ".nc"
+    return date, station, None
+
+
+def parallel_populate_data(
+    stations: Iterable[str],
+    start_date: GPSTime,
+    duration: timedelta,
+    dog: AstroDog,
+) -> Tuple[Dict[str, types.ECEF_XYZ], types.StationPrnMap[types.Observations]]:
+    """
+    Download/populate the station data and station location info
+
+    Args:
+        stations: list of station names
+        date_list: ordered list of the dates for which to fetch data
+        dog: astro dog to use
+
+    Returns:
+        dictionary of station names to their locations,
+        dictionary of station names to sat names to their dense data
+
+    TODO: is this a good place to be caching results?
+    """
+
+    # dict of station names -> XYZ ECEF locations in meters
+    station_locs: Dict[str, types.ECEF_XYZ] = {}
+    # dict of station names -> dict of prn -> numpy observation data
+    station_data = cast(types.StationPrnMap[types.Observations], {})
+
+    to_download = []
+    for station in stations:
+        gps_date = start_date
+        while gps_date < start_date + duration.total_seconds():
+            to_download.append((gps_date, station))
+            gps_date += (1 * util.DAYS).total_seconds()
+
+    with multiprocessing.Pool(DOWNLOAD_WORKERS) as pool:
+        download_res = pool.map(download_and_process, to_download)
+
+    downloaded_map = {
+        # break it up like this to deal with GPSTime not being hashable
+        (start_date.week, start_date.tow, station): result
+        for start_date, station, result in download_res
+    }
+
+    for station in stations:
+        gps_date = start_date
+        while gps_date < start_date + duration.total_seconds():
+
+            result = downloaded_map.get((gps_date.week, gps_date.tow, station))
+            gps_date += (1 * util.DAYS).total_seconds()
+
+            if result is None:
+                continue
+
+            latest_data = xarray.load_dataset(result)
+            if station not in station_locs:
+                station_locs[station] = latest_data.position
+
+            dense_data = from_xarray(latest_data, start_date)
+            if station not in station_data:
+                station_data[station] = dense_data
+            else:
+                # we've already got some data, so merge it together
+                # give mypy a hint here about our type aliases
+                station_data[station] = merge_data(
+                    cast(types.DenseMeasurements, station_data[station]),
+                    dense_data,
                 )
 
         # didn't download data, ignore it

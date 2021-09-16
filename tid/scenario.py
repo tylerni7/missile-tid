@@ -164,7 +164,7 @@ class Scenario:
 
         # date_list = _get_dates_in_range(start_date, duration)
         stations = set(stations)
-        locs, data = get_data.populate_data(
+        locs, data = get_data.parallel_populate_data(
             stations, GPSTime.from_datetime(start_date), duration, dog
         )
         # locs, data = _populate_data(stations, date_list, dog)
@@ -468,6 +468,8 @@ class Scenario:
                         bkpoint,
                     )
                 )
+        else:
+            connections.append(Connection(self, station, prn, 0, len(observations) - 1))
 
         return connections
 
