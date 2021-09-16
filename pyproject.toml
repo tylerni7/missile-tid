@@ -16,6 +16,7 @@ module = [
     "setuptools",
     "scipy",
     "scipy.signal",
+    "xarray",
 ]
 ignore_missing_imports = true
 
