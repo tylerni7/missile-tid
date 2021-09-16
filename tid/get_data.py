@@ -559,7 +559,9 @@ def populate_data(
     return station_locs, station_data
 
 
-def download_and_process(argtuple: Tuple[GPSTime, str]) -> Optional[str]:
+def download_and_process(
+    argtuple: Tuple[GPSTime, str]
+) -> Tuple[GPSTime, str, Optional[str]]:
     """
     Fetch the data for a station at a date, return a path to the NetCDF4 version of it
 
