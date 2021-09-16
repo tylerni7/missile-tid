@@ -241,7 +241,7 @@ class SimpleBiasSolver(BiasSolver):
             tec_idx = tec_id_map.get(tec_loc)
             if tec_idx is None:
                 continue
-            b_values.append(vtec_total - TEC_GUESS)
+            b_values.append(vtec_total - hit_cnt * TEC_GUESS)
             _mat_insert(measurements, tec_idx, hit_cnt)
             _mat_insert(
                 measurements,
