@@ -72,7 +72,7 @@ def calc_delay_factor(connection: Connection) -> float:
     return ((f1 ** 2) * (f2 ** 2)) / ((f1 ** 2) - (f2 ** 2))
 
 
-def calc_carrier_delays(connection: Connection) -> numpy.ndarray:
+def calc_carrier_delays(connection: Connection, delay_factor: float) -> numpy.ndarray:
     """
     Calculate delay differences between L1C and L2C signals
     Normalized to meters
@@ -104,8 +104,7 @@ def calc_carrier_delays(connection: Connection) -> numpy.ndarray:
     return (
         raw_phase_difference_meters
         + connection.carrier_correction_meters
-        + sat_bias
-        - station_bias
+        + (sat_bias - station_bias) * K / delay_factor
     )
 
 
@@ -145,8 +144,8 @@ def calculate_vtecs(connection: Connection) -> numpy.ndarray:
             unitless slant factors
         )
     """
-    delays = calc_carrier_delays(connection)
     delay_factor = calc_delay_factor(connection)
+    delays = calc_carrier_delays(connection, delay_factor)
     elevations = connection.elevation(connection.observations["sat_pos"])
 
     # total electron count integrated across the whole ionosphere
