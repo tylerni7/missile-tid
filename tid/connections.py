@@ -352,6 +352,21 @@ class ConnTickMap:
                 return con
         raise KeyError
 
+    def __contains__(self, tick: int) -> bool:
+        """
+        Do we have data for the tick
+
+        Args:
+            tick: the tick to check
+
+        Returns:
+            True iff we have data for the tick
+        """
+        for con in self.connections:
+            if tick in con:
+                return True
+        return False
+
     def get_vtecs(self) -> Sequence[float]:
         """
         Get vtec data for this set of connections

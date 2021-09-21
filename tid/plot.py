@@ -54,6 +54,7 @@ def plot_map(
     scenario: Scenario,
     extent: Optional[Tuple[float, float, float, float]] = None,
     frames: Optional[Iterable[int]] = None,
+    raw: bool = False,
 ) -> animation.Animation:
     """
     Plot an animated map of the scenario's filtered VTEC values
@@ -64,6 +65,7 @@ def plot_map(
             which defines the boundaries of the graphing region
             if None, defaults to the scenario's default extent
         frames: optional iterable of tick numbers to show
+        raw: whether to plot raw vtec data or filtered
 
     Returns:
         animation object (in case you want to save a gif)
@@ -71,14 +73,15 @@ def plot_map(
     axis = plt.axes(projection=cartopy.crs.PlateCarree())
     axis.add_feature(cpf.COASTLINE)
     scatter = axis.scatter([], [])
+    title = plt.title("Date")
     if extent is None:
         extent = scenario.get_extent()
     axis.set_extent(extent)
 
-    vtec_map, coord_map = scenario.get_filtered_vtec_data()
+    vtec_map, coord_map = scenario.get_vtec_data(raw=raw)
 
     def animate(i):
-        plt.title(str(timedelta(seconds=i * 30) + scenario.start_date))
+        title.set_text(str(timedelta(seconds=i * 30) + scenario.start_date))
 
         lons = []
         lats = []
@@ -95,19 +98,25 @@ def plot_map(
                 vals.append(vtec_map[station][prn][i])
 
         scatter.set_offsets(numpy.array((lons, lats)).T)
+        scale = (0, 50) if raw else (-TID_SCALE, TID_SCALE)
         nvals = numpy.array(vals)
         if len(nvals) > 0:
             # re-center about 0 and clip
-            nvals = numpy.clip(nvals + TID_SCALE, 0, TID_SCALE * 2)
+            nvals = numpy.clip(nvals - scale[0], 0, scale[1] - scale[0])
             # normalize data from 0 to 1
-            nvals /= TID_SCALE * 2
+            nvals /= scale[1] - scale[0]
             scatter.set_color(cm.plasma(nvals))
 
     def init():
         scatter.set_offsets([])
 
     ani = animation.FuncAnimation(
-        plt.gcf(), animate, init_func=init, frames=frames, repeat=True, interval=60
+        plt.gcf(),
+        animate,
+        init_func=init,
+        frames=frames,
+        repeat=True,
+        interval=60,
     )
     plt.show()
     return ani

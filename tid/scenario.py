@@ -248,8 +248,9 @@ class Scenario:
         # add a degree of padding around the edge
         return min_lon - 1, max_lon + 1, min_lat - 1, max_lat + 1
 
-    def get_filtered_vtec_data(
+    def get_vtec_data(
         self,
+        raw: bool = False,
     ) -> Tuple[
         types.StationPrnMap[Sequence[float]],
         types.StationPrnMap[Sequence[Optional[Tuple[float, float]]]],
@@ -271,7 +272,12 @@ class Scenario:
                     vtecs[station] = {}
                 if station not in ipps:
                     ipps[station] = {}
-                vtecs[station][prn] = self.conn_map[station][prn].get_filtered_vtecs()
+                if raw:
+                    vtecs[station][prn] = self.conn_map[station][prn].get_vtecs()
+                else:
+                    vtecs[station][prn] = self.conn_map[station][
+                        prn
+                    ].get_filtered_vtecs()
                 ipps[station][prn] = self.conn_map[station][prn].get_ipps_latlon()
         return vtecs, ipps
 
