@@ -389,7 +389,10 @@ class Scenario:
         # first pass: when tickcount jumps by >= DISCON_TIME
         bkpoints |= set(numpy.where(numpy.diff(observations["tick"]) >= DISCON_TIME)[0])
 
-        f1, f2 = self.get_frequencies(prn, observations)
+        freqs = self.get_frequencies(prn, observations)
+        if freqs is None:
+            return []
+        f1, f2 = freqs
 
         mw_signal = tec.melbourne_wubbena((f1, f2), observations)
         # if this calculation failed, we don't have proper dual channel info anyway
