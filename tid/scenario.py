@@ -11,7 +11,6 @@ from typing import cast, Dict, Iterable, Optional, Sequence, Tuple, Union
 from pathlib import Path
 import hashlib
 
-import ruptures
 import numpy
 import h5py
 
@@ -30,7 +29,7 @@ conf = Configuration()
 
 MIN_CON_LENGTH = 20  # 10 minutes worth of connection
 DISCON_TIME = 4  # cycle slip for >= 4 samples without info
-EL_CUTOFF = 0.25  # elevation cutoff in radians, shallower than this ignored
+EL_CUTOFF = 0.15  # elevation cutoff in radians, shallower than this ignored
 
 
 class Scenario:
@@ -390,9 +389,12 @@ class Scenario:
         # first pass: when tickcount jumps by >= DISCON_TIME
         bkpoints |= set(numpy.where(numpy.diff(observations["tick"]) >= DISCON_TIME)[0])
 
-        mw_signal = tec.melbourne_wubbena(
-            self.get_frequencies(prn, observations), observations
-        )
+        freqs = self.get_frequencies(prn, observations)
+        if freqs is None:
+            return []
+        f1, f2 = freqs
+
+        mw_signal = tec.melbourne_wubbena((f1, f2), observations)
         # if this calculation failed, we don't have proper dual channel info anyway
         if mw_signal is None:
             return []
@@ -407,38 +409,43 @@ class Scenario:
             ]
         )
 
-        # final pass: run ruptures on the remaining mw_signal contiguous chunks
-        binseg = ruptures.Binseg(model="l2")
+        # fourth pass: l1 - l2 discontinuities
+        discontinuities = numpy.where(
+            numpy.abs(
+                numpy.diff(observations["L1C"] / f1 - observations["L2C"] / f2, n=2)
+            )
+            > 1e-10
+        )[0]
+        bkpoints |= set(discontinuities)
+        bkpoints |= set(discontinuities + 2)
+
+        # final pass: run segmenter on the remaining mw_signal contiguous chunks
         bkpoint_list = sorted(bkpoints)
-        ruptures_bkpoints = set()
+        segmenter_bkpoints = set()
         for i, bkpoint in enumerate(bkpoint_list):
             if i == 0:  # first breakpoint
                 start = 0
             else:
-                start = bkpoint_list[i - 1]
+                start = bkpoint_list[i - 1] + 1
             count = bkpoint - start
             if count < MIN_CON_LENGTH:
                 continue
-            bkpts = binseg.fit_predict(
-                mw_signal[start:bkpoint], pen=count / numpy.log(count)
-            )
-            ruptures_bkpoints |= set(bkpts)
+            bkpts = util.segmenter(mw_signal[start:bkpoint])
+            segmenter_bkpoints |= set(start + bkpt for bkpt in bkpts)
 
         if len(bkpoint_list) > 0:
             # and one for the last section
-            start = bkpoint_list[-1]
+            start = bkpoint_list[-1] + 1
             bkpoint = len(observations) - 1
             count = bkpoint - start
             if count >= MIN_CON_LENGTH:
-                bkpts = binseg.fit_predict(
-                    mw_signal[start:bkpoint], pen=count / numpy.log(count)
-                )
-                ruptures_bkpoints |= set(bkpts)
+                bkpts = util.segmenter(mw_signal[start:bkpoint])
+                segmenter_bkpoints |= set(bkpts)
 
         # include everything EXCEPT for these points
         # and separate chunks by these points
         # don't include segments that are too short
-        partition_points = sorted(ruptures_bkpoints | set(bkpoints))
+        partition_points = sorted(segmenter_bkpoints | set(bkpoints))
 
         connections = []
         for i, bkpoint in enumerate(partition_points):
