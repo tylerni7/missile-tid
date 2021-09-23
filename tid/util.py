@@ -157,3 +157,25 @@ def bpfilter(
     return butter_bandpass_filter(
         data, 1 / (long_min * 60), 1 / (short_min * 60), 1 / DATA_RATE
     )
+
+
+def segmenter(data_stream: numpy.ndarray) -> Sequence[int]:
+    """
+    Split up a signal that should be "steady"
+    Return a list of all indices which should represent
+    boundaries and be tossed out
+
+    Args:
+        data_stream: numpy array of 1d data that should be ~constant
+
+    Returns:
+        list of indices to remove
+    """
+    diff = numpy.median(
+        numpy.convolve(
+            numpy.abs(numpy.diff(data_stream)), numpy.array([1, 1, 1, 1, 1]) / 5
+        )
+    )
+    return numpy.where(
+        numpy.abs(numpy.diff(data_stream, prepend=data_stream[0])) > diff * 5
+    )[0]
