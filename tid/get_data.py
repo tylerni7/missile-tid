@@ -614,6 +614,7 @@ def populate_sat_info(
             station_dict[station][sat]["sat_pos"][:] = corrected_pos
 
     for station, sat in bad_datas:
+        print("bad", station, sat)
         del station_dict[station][sat]
 
 
