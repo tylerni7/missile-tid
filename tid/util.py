@@ -15,6 +15,7 @@ from tid import types
 
 DATA_RATE = 30  # how many seconds / measurement
 DAYS = timedelta(days=1)
+HOURS = timedelta(hours=1)
 
 
 def gpstime_fromstr(timestr: str) -> GPSTime:
