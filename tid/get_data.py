@@ -10,6 +10,7 @@ import os
 import re
 from typing import cast, Dict, Iterable, Optional, Sequence, Tuple
 import zipfile
+from laika.constants import SECS_IN_DAY
 
 import numpy
 import requests
@@ -455,6 +456,42 @@ def data_for_station(
     return from_xarray(rinex, start_date)
 
 
+def get_sat_info_old_okay(
+    dog: AstroDog, start_time: GPSTime
+) -> Dict[str, Tuple[numpy.ndarray, numpy.ndarray, float, float]]:
+    """
+    Wrapper around dog.get_all_sat_info that will use out-of-date data for
+    GLONASS if we can't find any. GLONASS updates stuff real slow?
+
+    Args:
+        dog: AstroDog to use
+        start_time: time for which we want data
+
+    Returns:
+        dict of PRNs to (position, velocity, offset1, offset2)
+        same format as dog.get_all_sat_info
+    """
+    res = dog.get_all_sat_info(start_time)
+    # missing GLONASS data
+    if "R01" not in res:
+        # and looking at something < 2 days old
+        if GPSTime.from_datetime(datetime.utcnow()) - start_time < SECS_IN_DAY * 2:
+            for i in range(1, 4):
+                # most recent first, up to 3 days old
+                eph = dog.get_nav("R01", start_time - SECS_IN_DAY * i)
+                if eph:
+                    break
+            else:
+                # can't get GLONASS data, whatever
+                return res
+
+            for prn, ephs in dog.nav.items():
+                if not prn.startswith("R"):
+                    continue
+                res[prn] = ephs[-1].get_sat_info(start_time)
+    return res
+
+
 def populate_sat_info(
     dog: AstroDog,
     start_time: GPSTime,
@@ -473,7 +510,9 @@ def populate_sat_info(
     TODO: can numba (or something) help us parallelize the lower loops?
     """
 
-    satellites = {sat: idx for idx, sat in enumerate(dog.get_all_sat_info(start_time))}
+    satellites = {
+        sat: idx for idx, sat in enumerate(get_sat_info_old_okay(dog, start_time))
+    }
     tick_count = int(duration.total_seconds() / util.DATA_RATE)
     # get an accurate view of the satellites at 30 second intervals
     sat_info = numpy.zeros(
@@ -481,7 +520,7 @@ def populate_sat_info(
     )
 
     for tick in range(tick_count + 1):
-        tick_info = dog.get_all_sat_info(start_time + util.DATA_RATE * tick)
+        tick_info = get_sat_info_old_okay(dog, start_time + util.DATA_RATE * tick)
         for svid, info in tick_info.items():
             sat_info[satellites[svid]][tick] = (info[0], info[1])
 
@@ -501,6 +540,7 @@ def populate_sat_info(
             station_dict[station][sat]["sat_pos"][:] = corrected_pos
 
     for station, sat in bad_datas:
+        print("bad", station, sat)
         del station_dict[station][sat]
 
 
@@ -607,8 +647,13 @@ def download_and_process(
     """
     date, station, partial = argtuple
 
+    if partial:
+        char_code = char_code_for_partial(date)
+    else:
+        char_code = "0"
+
     # first search for already processed NetCDF4 files
-    path_name = date.as_datetime().strftime(f"%Y/%j/{station}%j0.%yo.nc")
+    path_name = date.as_datetime().strftime(f"%Y/%j/{station}%j{char_code}.%yo.nc")
     for cache_folder in ["misc_igs_obs", "japanese_obs", "korean_obs", "cors_obs"]:
         fname = f"{conf.cache_dir}/{cache_folder}/{path_name}"
         if os.path.exists(fname):
