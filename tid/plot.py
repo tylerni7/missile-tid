@@ -55,6 +55,7 @@ def plot_map(
     extent: Optional[Tuple[float, float, float, float]] = None,
     frames: Optional[Iterable[int]] = None,
     raw: bool = False,
+    display: bool = True,
 ) -> animation.Animation:
     """
     Plot an animated map of the scenario's filtered VTEC values
@@ -66,6 +67,7 @@ def plot_map(
             if None, defaults to the scenario's default extent
         frames: optional iterable of tick numbers to show
         raw: whether to plot raw vtec data or filtered
+        display: whether to show the animation or not
 
     Returns:
         animation object (in case you want to save a gif)
@@ -118,5 +120,6 @@ def plot_map(
         repeat=True,
         interval=60,
     )
-    plt.show()
+    if display:
+        plt.show()
     return ani
