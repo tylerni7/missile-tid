@@ -3,11 +3,23 @@ Fetch data hourly and save it as an animation
 """
 import datetime
 import time
+import sys
 
 from laika import AstroDog
+from laika.gps_time import GPSTime
 
 from tid import plot, util, scenario
 from tid.config import Configuration
+
+
+if len(sys.argv) < 2:
+    print(f"Usage: {sys.argv[0]} output_folder [hours to run]")
+    sys.exit(0)
+output_folder = sys.argv[1]
+if len(sys.argv) == 2:
+    count = float("inf")
+else:
+    count = int(sys.argv[2])
 
 
 # load configuration data
@@ -77,9 +89,13 @@ def next_update(time: datetime.datetime):
         )
 
 
-next_time = next_update(datetime.datetime.utcnow() - util.HOURS)
+next_time = next_update(datetime.datetime.utcnow())
 
-while True:
+tick = 0
+while tick < count:
+    # just run this to get sat info earlier, because it's slow -_-
+    dog.get_all_sat_info(GPSTime.from_datetime(next_time))
+
     conf.logger.info(
         f"Waiting until next window ({next_time - datetime.datetime.utcnow()})"
     )
@@ -104,6 +120,7 @@ while True:
     extent = (123, 140, 33, 43)
 
     ani = plot.plot_map(sc, extent=extent, frames=range(0, 120), display=False)
-    ani.save(f"/tmp/{date.strftime('%Y-%m-%d_%H')}")
+    ani.save(f"{output_folder}/{date.strftime('%Y-%m-%d_%H')}.gif")
 
     next_time = next_update(datetime.datetime.utcnow())
+    tick += 1
