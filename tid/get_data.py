@@ -168,7 +168,8 @@ def _download_korean_station(
     Should only be used internally by data_for_station
 
     TODO: we can download from multiple stations at once and save some time here....
-    TODO: separate network: ftp://gnss-ftp.kasi.re.kr and ftp://nfs.kasi.re.kr (IGS only?) and https://gnss.eseoul.go.kr/timeselection
+    TODO: separate network: ftp://gnss-ftp.kasi.re.kr and ftp://nfs.kasi.re.kr (IGS only?)
+        and https://gnss.eseoul.go.kr/timeselection
 
     Args:
         dog: laika AstroDog object
