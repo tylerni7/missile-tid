@@ -110,7 +110,7 @@ def plot_map(
             scatter.set_color(cm.plasma(nvals))
 
     def init():
-        scatter.set_offsets([])
+        return scatter
 
     ani = animation.FuncAnimation(
         plt.gcf(),
