@@ -10,11 +10,13 @@ import os
 import re
 from typing import cast, Dict, Iterable, Optional, Sequence, Tuple
 import zipfile
+from hatanaka.general_compression import decompress
 from laika.constants import SECS_IN_DAY
 
 import numpy
 import requests
 
+import hatanaka
 import georinex
 import xarray
 
@@ -264,6 +266,75 @@ def _download_japanese_station(
         return None
 
 
+mongolian_csrf_info = {}
+
+
+def _get_mongolian_csrf() -> None:
+    """
+    We need a CSRF token to download things. This will load the page and populate
+    the tokens to be used
+    """
+    req = requests.get("http://monpos.gazar.gov.mn/monstatic")
+    mongolian_csrf_info["csrftoken"] = req.cookies["csrftoken"]
+
+    idx = req.text.index('value="', req.text.index("csrfmiddlewaretoken"))
+    mongolian_csrf_info["csrfmiddlewaretoken"] = req.text[idx + 7 : idx + 7 + 64]
+
+
+def _download_mongolian_station(
+    dog: AstroDog, time: GPSTime, station_name: str, partial: bool = False
+) -> Optional[str]:
+    """
+    Downloader for Mongolian stations. Attempts to download rinex observables
+    for the given station and time.
+    Should only be used internally by data_for_station
+
+    Args:
+        dog: laika AstroDog object
+        time: laika GPSTime object
+        station_name: string representation a station name
+        partial: whether to get "partial" (hourly) data
+
+    Returns:
+        string representing a path to the downloaded file
+        or None, if the file was not able to be downloaded
+    """
+    if partial:
+        raise NotImplementedError
+
+    cache_subdir = dog.cache_dir + "mongolian_obs/"
+    t = time.as_datetime()
+    # different path formats...
+    folder_path = cache_subdir + t.strftime("%Y/%j/")
+    if not os.path.exists(folder_path):
+        os.makedirs(folder_path, exist_ok=True)
+
+    mongolian_csrf_info
+    if not mongolian_csrf_info:
+        _get_mongolian_csrf()
+
+    datestr = t.strftime("%Y-%m-%d")
+    req = requests.post(
+        "http://monpos.gazar.gov.mn/download/" + station_name,
+        data={
+            "csrfmiddlewaretoken": mongolian_csrf_info["csrfmiddlewaretoken"],
+            "datepicker": datestr,
+        },
+        cookies={"csrftoken": mongolian_csrf_info["csrftoken"]},
+    )
+    if req.status_code != 200:
+        return
+
+    disk_path = folder_path + station_name + t.strftime(".%yo")
+    with open(disk_path, "wb") as f:
+        decompressed = hatanaka.decompress(req.content)
+        # doesn't 404 I guess?
+        if b"<!DOCTYPE html>" in decompressed:
+            return
+        f.write(decompressed)
+    return disk_path
+
+
 def cors_get_station_lists_for_day(date: datetime) -> Iterable[str]:
     """
     Given a date, returns the stations that the US CORS network
@@ -301,6 +372,7 @@ def fetch_rinex_for_station(
     handlers = {
         "Korea": _download_korean_station,
         "Japan": _download_japanese_station,
+        "Mongolia": _download_mongolian_station,
     }
 
     network = STATION_NETWORKS.get(station_name, None)
@@ -386,6 +458,8 @@ def from_xarray_sat(rinex: xarray.Dataset, start_date: GPSTime) -> types.Observa
         Observations for the satellite
     """
     # truncate to observations with data
+    if "C1" not in rinex:
+        return numpy.zeros(0, dtype=DENSE_TYPE)
     rinex = rinex.dropna("time", how="all", subset=["C1"])
     outp = numpy.zeros(rinex.dims["time"], dtype=DENSE_TYPE)
 
@@ -541,7 +615,6 @@ def populate_sat_info(
             station_dict[station][sat]["sat_pos"][:] = corrected_pos
 
     for station, sat in bad_datas:
-        print("bad", station, sat)
         del station_dict[station][sat]
 
 
@@ -655,7 +728,13 @@ def download_and_process(
 
     # first search for already processed NetCDF4 files
     path_name = date.as_datetime().strftime(f"%Y/%j/{station}%j{char_code}.%yo.nc")
-    for cache_folder in ["misc_igs_obs", "japanese_obs", "korean_obs", "cors_obs"]:
+    for cache_folder in [
+        "misc_igs_obs",
+        "japanese_obs",
+        "korean_obs",
+        "mongolian_obs",
+        "cors_obs",
+    ]:
         fname = f"{conf.cache_dir}/{cache_folder}/{path_name}"
         if os.path.exists(fname):
             return date, station, fname
@@ -664,7 +743,7 @@ def download_and_process(
     if rinex_obs_file is not None:
         if os.path.exists(rinex_obs_file + ".nc"):
             return date, station, rinex_obs_file + ".nc"
-        rinex = georinex.load(rinex_obs_file, interval=30)
+        rinex = georinex.load(rinex_obs_file, interval=30, use=["G", "R"], fast=False)
         rinex["time"] = rinex.time.astype(numpy.datetime64)
         rinex.to_netcdf(rinex_obs_file + ".nc")
         return date, station, rinex_obs_file + ".nc"

@@ -73,7 +73,9 @@ def plot_map(
         animation object (in case you want to save a gif)
     """
     axis = plt.axes(projection=cartopy.crs.PlateCarree())
+    axis.clear()
     axis.add_feature(cpf.COASTLINE)
+    axis.add_feature(cpf.BORDERS)
     scatter = axis.scatter([], [])
     title = plt.title("Date")
     if extent is None:
@@ -120,6 +122,7 @@ def plot_map(
         repeat=True,
         interval=60,
     )
+    plt.tight_layout()
     if display:
         plt.show()
     return ani
