@@ -5,7 +5,6 @@ Things to manage those are stored here
 """
 from __future__ import annotations  # defer type annotations due to circular stuff
 import collections
-from datetime import timedelta
 from functools import cached_property
 from typing import (
     TYPE_CHECKING,
@@ -25,7 +24,7 @@ from scipy import optimize
 
 from laika.lib import coordinates
 
-from tid import scenario, tec, types, util
+from tid import tec, types, util
 
 # deal with circular type definitions for Scenario
 if TYPE_CHECKING:
@@ -299,6 +298,9 @@ class Connection:
         local_times = 43200 * (lons) + times % 86400
         phase = (2 * numpy.pi * (local_times - 50400) / 86400) % (2 * numpy.pi)
         phase = numpy.maximum(numpy.abs(numpy.pi - phase), numpy.pi / 2)
+
+        # magnitude ought to depend on the solar inclination and latitude or something
+        # if we're at the north pole in summer vs winter, this changes a ton?
         magnitude = -numpy.cos(phase) + 2
         vtecs = self.vtecs[0]
         gm_lats = lats + 0.064 * numpy.cos((lons - 1.617) * numpy.pi)
@@ -309,8 +311,8 @@ class Connection:
                 (
                     magnitude * numpy.ones(len(vtecs)),
                     magnitude * gm_lats,
-                    magnitude * gm_lats ** 2,
-                    magnitude * gm_lats ** 3,
+                    magnitude * gm_lats**2,
+                    magnitude * gm_lats**3,
                 )
             ).T,
             vtecs,
@@ -319,8 +321,8 @@ class Connection:
         return (
             magnitude * coeffs[0]
             + magnitude * gm_lats * coeffs[1]
-            + magnitude * gm_lats ** 2 * coeffs[2]
-            + magnitude * gm_lats ** 3 * coeffs[3]
+            + magnitude * gm_lats**2 * coeffs[2]
+            + magnitude * gm_lats**3 * coeffs[3]
         )
 
     def vtec_fmodel(self) -> numpy.ndarray:
@@ -350,8 +352,8 @@ class Connection:
                 (
                     magnitude * numpy.ones(len(vtecs)),
                     magnitude * gm_lats,
-                    magnitude * gm_lats ** 2,
-                    magnitude * gm_lats ** 3,
+                    magnitude * gm_lats**2,
+                    magnitude * gm_lats**3,
                 )
             ).T,
             vtecs,
@@ -360,8 +362,8 @@ class Connection:
         return (
             magnitude * coeffs[0]
             + magnitude * gm_lats * coeffs[1]
-            + magnitude * gm_lats ** 2 * coeffs[2]
-            + magnitude * gm_lats ** 3 * coeffs[3]
+            + magnitude * gm_lats**2 * coeffs[2]
+            + magnitude * gm_lats**3 * coeffs[3]
         )
 
     def klobuchar(self, alphas, betas) -> numpy.ndarray:
@@ -380,8 +382,8 @@ class Connection:
         local_times = (43200 * (lons) + times) % 86400
         gm_lats = lats + 0.064 * numpy.cos(lons - 1.617)
 
-        a = numpy.sum([(gm_lats ** i * alphas[i]) for i in range(4)], axis=0)
-        p = numpy.sum([(gm_lats ** i * betas[i]) for i in range(4)], axis=0)
+        a = numpy.sum([(gm_lats**i * alphas[i]) for i in range(4)], axis=0)
+        p = numpy.sum([(gm_lats**i * betas[i]) for i in range(4)], axis=0)
 
         phase = 2 * numpy.pi * (local_times - 50400) / numpy.maximum(p, 72000)
         phase = numpy.maximum(numpy.abs(phase), numpy.pi / 2)

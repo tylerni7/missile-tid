@@ -69,7 +69,7 @@ def calc_delay_factor(connection: Connection) -> float:
         delay factor, in units of seconds^2
     """
     f1, f2 = connection.frequencies
-    return ((f1 ** 2) * (f2 ** 2)) / ((f1 ** 2) - (f2 ** 2))
+    return ((f1**2) * (f2**2)) / ((f1**2) - (f2**2))
 
 
 def calc_carrier_delays(connection: Connection, delay_factor: float) -> numpy.ndarray:
@@ -180,9 +180,9 @@ def ion_locs(
     # pylint: disable=invalid-name
     a = numpy.sum((sat_pos - rec_pos) ** 2, axis=1)
     b = 2 * numpy.sum((sat_pos - rec_pos) * rec_pos, axis=1)
-    c = numpy.sum(rec_pos ** 2) - ionh ** 2
+    c = numpy.sum(rec_pos**2) - ionh**2
 
-    common = numpy.sqrt(b ** 2 - (4 * a * c)) / (2 * a)
+    common = numpy.sqrt(b**2 - (4 * a * c)) / (2 * a)
     b_scaled = -b / (2 * a)
     # TODO, I think the there is a clever way to vectorize the loop below
     # solutions = numpy.stack((b_scaled + common, b_scaled - common), axis=1)

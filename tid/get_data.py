@@ -10,7 +10,6 @@ import os
 import re
 from typing import cast, Dict, Iterable, Optional, Sequence, Tuple
 import zipfile
-from hatanaka.general_compression import decompress
 from laika.constants import SECS_IN_DAY
 
 import numpy
@@ -323,14 +322,14 @@ def _download_mongolian_station(
         cookies={"csrftoken": mongolian_csrf_info["csrftoken"]},
     )
     if req.status_code != 200:
-        return
+        return None
 
     disk_path = folder_path + station_name + t.strftime(".%yo")
     with open(disk_path, "wb") as f:
         decompressed = hatanaka.decompress(req.content)
         # doesn't 404 I guess?
         if b"<!DOCTYPE html>" in decompressed:
-            return
+            return None
         f.write(decompressed)
     return disk_path
 
@@ -459,7 +458,7 @@ def from_xarray_sat(rinex: xarray.Dataset, start_date: GPSTime) -> types.Observa
     """
     # truncate to observations with data
     if "C1" not in rinex:
-        return numpy.zeros(0, dtype=DENSE_TYPE)
+        return cast(types.Observations, numpy.zeros(0, dtype=DENSE_TYPE))
     rinex = rinex.dropna("time", how="all", subset=["C1"])
     outp = numpy.zeros(rinex.dims["time"], dtype=DENSE_TYPE)
 

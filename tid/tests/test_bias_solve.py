@@ -112,7 +112,7 @@ def true_error(
     How far off were the biases from the true biases?
     """
 
-    sum_squared_error = 0
+    sum_squared_error = 0.0
     for station in true_station_biases:
         sum_squared_error += numpy.linalg.norm(
             true_station_biases[station] - calcd_station_biases[station]
