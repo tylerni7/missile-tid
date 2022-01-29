@@ -114,8 +114,11 @@ def true_error(
 
     sum_squared_error = 0.0
     for station in true_station_biases:
-        sum_squared_error += numpy.linalg.norm(
-            true_station_biases[station] - calcd_station_biases[station]
+        sum_squared_error += cast(
+            float,
+            numpy.linalg.norm(
+                true_station_biases[station] - calcd_station_biases[station]
+            ),
         )
 
     for sat in true_sat_biases:

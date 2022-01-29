@@ -637,7 +637,9 @@ def merge_data(
             combined[prn] = data2[prn]
         # otherwise we need an actual merge
         else:
-            combined[prn] = numpy.append(data1[prn], data2[prn])
+            combined[prn] = cast(
+                type.Observations, numpy.append(data1[prn], data2[prn])
+            )
 
     return cast(types.DenseMeasurements, combined)
 

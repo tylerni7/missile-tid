@@ -425,9 +425,10 @@ class Scenario:
 
         # third pass: elevation cutoff
         bkpoints |= set(
-            numpy.where(self.station_el(station, cast(types.ECEF_XYZ, observations["sat_pos"])) < el_cutoff)[
-                0
-            ]
+            numpy.where(
+                self.station_el(station, cast(types.ECEF_XYZ, observations["sat_pos"]))
+                < el_cutoff
+            )[0]
         )
 
         # fourth pass: l1 - l2 discontinuities

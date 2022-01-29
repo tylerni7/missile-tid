@@ -7,6 +7,7 @@ from __future__ import annotations  # defer type annotations due to circular stu
 import collections
 from functools import cached_property
 from typing import (
+    cast,
     TYPE_CHECKING,
     Any,
     Callable,
@@ -164,9 +165,12 @@ class Connection:
         """
         # note: don't use self.ticks, `range` vs `slice` is a lot slower
         assert self.scenario.station_data
-        return self.scenario.station_data[self.station][self.prn][
-            self.idx_start : self.idx_end + 1
-        ]
+        return cast(
+            types.Observations,
+            self.scenario.station_data[self.station][self.prn][
+                self.idx_start : self.idx_end + 1
+            ],
+        )
 
     def elevation(
         self, sat_pos: Union[types.ECEF_XYZ, types.ECEF_XYZ_LIST]
@@ -252,8 +256,11 @@ class Connection:
         Returns:
             numpy array of XYZ ECEF coordinates in meters of the IPPs
         """
-        return tec.ion_locs(
-            self.scenario.station_locs[self.station], self.observations["sat_pos"]
+        return cast(
+            types.ECEF_XYZ_LIST,
+            tec.ion_locs(
+                self.scenario.station_locs[self.station], self.observations["sat_pos"]
+            ),
         )
 
     @property

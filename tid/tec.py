@@ -6,7 +6,7 @@ belong in here
 """
 from __future__ import annotations  # defer type annotations due to circular stuff
 
-from typing import TYPE_CHECKING, Optional, Tuple
+from typing import cast, TYPE_CHECKING, Optional, Tuple
 import numpy
 
 from laika import constants
@@ -146,7 +146,9 @@ def calculate_vtecs(connection: Connection) -> numpy.ndarray:
     """
     delay_factor = calc_delay_factor(connection)
     delays = calc_carrier_delays(connection, delay_factor)
-    elevations = connection.elevation(connection.observations["sat_pos"])
+    elevations = connection.elevation(
+        cast(types.ECEF_XYZ, connection.observations["sat_pos"])
+    )
 
     # total electron count integrated across the whole ionosphere
     slant_tec = delays * delay_factor / K
