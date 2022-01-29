@@ -296,10 +296,10 @@ class Connection:
         lats, lons = (
             coordinates.ecef2geodetic(self.ipps, radians=True)[..., 0:2].T / numpy.pi
         )
-        times = self.observations["tick"] * numpy.timedelta64(
+        dtimes = self.observations["tick"] * numpy.timedelta64(
             30, "s"
         ) + numpy.datetime64(self.scenario.start_date)
-        times = int(times.astype("datetime64[s]").astype("int")) % 86400
+        times = int(dtimes.astype("datetime64[s]").astype("int")) % 86400
         local_times = 43200 * (lons) + times % 86400
         phase = (2 * numpy.pi * (local_times - 50400) / 86400) % (2 * numpy.pi)
         phase = numpy.maximum(numpy.abs(numpy.pi - phase), numpy.pi / 2)
@@ -340,10 +340,10 @@ class Connection:
         lats, lons = (
             coordinates.ecef2geodetic(self.ipps, radians=True)[..., 0:2].T / numpy.pi
         )
-        times = self.observations["tick"] * numpy.timedelta64(
+        dtimes = self.observations["tick"] * numpy.timedelta64(
             30, "s"
         ) + numpy.datetime64(self.scenario.start_date)
-        times = int(times.astype("datetime64[s]").astype("int")) % 86400
+        times = int(dtimes.astype("datetime64[s]").astype("int")) % 86400
         local_times = 43200 * (lons) + times % 86400
         phase = (2 * numpy.pi * (local_times - 50400) / 86400) % (2 * numpy.pi)
         phase = numpy.maximum(numpy.abs(numpy.pi - phase), numpy.pi / 2)
@@ -380,10 +380,10 @@ class Connection:
         lats, lons = (
             coordinates.ecef2geodetic(self.ipps, radians=True)[..., 0:2].T / numpy.pi
         )
-        times = self.observations["tick"] * numpy.timedelta64(
+        dtimes = self.observations["tick"] * numpy.timedelta64(
             30, "s"
         ) + numpy.datetime64(self.scenario.start_date)
-        times = int(times.astype("datetime64[s]").astype("int")) % 86400
+        times = int(dtimes.astype("datetime64[s]").astype("int")) % 86400
         local_times = (43200 * (lons) + times) % 86400
         gm_lats = lats + 0.064 * numpy.cos(lons - 1.617)
 
