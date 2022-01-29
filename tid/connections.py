@@ -256,10 +256,11 @@ class Connection:
         Returns:
             numpy array of XYZ ECEF coordinates in meters of the IPPs
         """
-        return cast(
-            types.ECEF_XYZ_LIST,
-            tec.ion_locs(
-                self.scenario.station_locs[self.station], self.observations["sat_pos"]
+        return tec.ion_locs(
+            cast(
+                types.ECEF_XYZ_LIST,
+                self.scenario.station_locs[self.station],
+                self.observations["sat_pos"],
             ),
         )
 
@@ -301,7 +302,7 @@ class Connection:
         times = self.observations["tick"] * numpy.timedelta64(
             30, "s"
         ) + numpy.datetime64(self.scenario.start_date)
-        times = times.astype("datetime64[s]").astype("int") % 86400
+        times = cast(int, times.astype("datetime64[s]").astype("int")) % 86400
         local_times = 43200 * (lons) + times % 86400
         phase = (2 * numpy.pi * (local_times - 50400) / 86400) % (2 * numpy.pi)
         phase = numpy.maximum(numpy.abs(numpy.pi - phase), numpy.pi / 2)
@@ -345,7 +346,7 @@ class Connection:
         times = self.observations["tick"] * numpy.timedelta64(
             30, "s"
         ) + numpy.datetime64(self.scenario.start_date)
-        times = times.astype("datetime64[s]").astype("int") % 86400
+        times = cast(int, times.astype("datetime64[s]").astype("int")) % 86400
         local_times = 43200 * (lons) + times % 86400
         phase = (2 * numpy.pi * (local_times - 50400) / 86400) % (2 * numpy.pi)
         phase = numpy.maximum(numpy.abs(numpy.pi - phase), numpy.pi / 2)
@@ -385,7 +386,7 @@ class Connection:
         times = self.observations["tick"] * numpy.timedelta64(
             30, "s"
         ) + numpy.datetime64(self.scenario.start_date)
-        times = times.astype("datetime64[s]").astype("int") % 86400
+        times = cast(int, times.astype("datetime64[s]").astype("int")) % 86400
         local_times = (43200 * (lons) + times) % 86400
         gm_lats = lats + 0.064 * numpy.cos(lons - 1.617)
 
