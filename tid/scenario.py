@@ -10,6 +10,13 @@ from functools import lru_cache
 from typing import cast, Dict, Iterable, Optional, Sequence, Tuple, Union
 from pathlib import Path
 import hashlib
+from laika.constants import (
+    GLONASS_L1,
+    GLONASS_L1_DELTA,
+    GLONASS_L2,
+    GLONASS_L2_DELTA,
+    SECS_IN_DAY,
+)
 
 import numpy
 import h5py
@@ -340,7 +347,14 @@ class Scenario:
         time = GPSTime.from_datetime(self.start_date) + util.DATA_RATE * int(
             observations[0]["tick"]
         )
-        return self.dog.get_glonass_channel(prn, time)
+        chan = self.dog.get_glonass_channel(prn, time)
+        if (
+            chan is None
+            and prn in self.dog.nav
+            and GPSTime.from_datetime(datetime.utcnow()) - time < SECS_IN_DAY * 2
+        ):
+            chan = self.dog.nav[prn][-1].channel
+        return chan
 
     def get_frequencies(
         self, prn: str, observations: types.Observations
@@ -361,6 +375,13 @@ class Scenario:
         f1, f2 = [self.dog.get_frequency(prn, time, band) for band in ("C1C", "C2C")]
         # if the lookup didn't work, we can't proceed
         if not f1 or not f2:
+            # this is a recent GLONASS observation, fall back to stale data if we can
+            if prn.startswith("R"):
+                channel = self.get_glonass_chan(prn, observations)
+                if channel:
+                    f1 = GLONASS_L1 + channel + GLONASS_L1_DELTA
+                    f2 = GLONASS_L2 + channel + GLONASS_L2_DELTA
+                    return f1, f2
             return None
         return f1, f2
 
@@ -404,9 +425,10 @@ class Scenario:
 
         # third pass: elevation cutoff
         bkpoints |= set(
-            numpy.where(self.station_el(station, observations["sat_pos"]) < el_cutoff)[
-                0
-            ]
+            numpy.where(
+                self.station_el(station, cast(types.ECEF_XYZ, observations["sat_pos"]))
+                < el_cutoff
+            )[0]
         )
 
         # fourth pass: l1 - l2 discontinuities

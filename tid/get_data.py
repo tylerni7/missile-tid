@@ -10,10 +10,12 @@ import os
 import re
 from typing import cast, Dict, Iterable, Optional, Sequence, Tuple
 import zipfile
+from laika.constants import SECS_IN_DAY
 
 import numpy
 import requests
 
+import hatanaka
 import georinex
 import xarray
 
@@ -52,6 +54,20 @@ with open(
     STATION_NETWORKS = json.load(f)
 
 conf = config.Configuration()
+
+
+def char_code_for_partial(time: GPSTime) -> str:
+    """
+    Preliminary (hourly) data uses a letter to indicate which hour it is for.
+    This gets the right code for a given time.
+
+    Args:
+        time: the GPSTime start for the time we want
+
+    Returns:
+        letter a-x
+    """
+    return chr(ord("a") + int((time.tow / (60 * 60)) % 24))
 
 
 def get_nearby_stations(
@@ -94,7 +110,7 @@ def get_nearby_stations(
 
 
 def _download_misc_igs_station(
-    dog: AstroDog, time: GPSTime, station_name: str
+    dog: AstroDog, time: GPSTime, station_name: str, partial: bool = False
 ) -> Optional[str]:
     """
     Downloader for non-CORS stations. Attempts to download rinex observables
@@ -105,11 +121,15 @@ def _download_misc_igs_station(
         dog: laika AstroDog object
         time: laika GPSTime object
         station_name: string representation a station name
+        partial: whether to get "partial" (hourly) data
 
     Returns:
         string representing a path to the downloaded file
         or None, if the file was not able to be downloaded
     """
+    if partial:
+        raise NotImplementedError
+
     cache_subdir = dog.cache_dir + "misc_igs_obs/"
     t = time.as_datetime()
     # different path formats...
@@ -141,7 +161,7 @@ def _download_misc_igs_station(
 
 
 def _download_korean_station(
-    dog: AstroDog, time: GPSTime, station_name: str
+    dog: AstroDog, time: GPSTime, station_name: str, partial: bool = False
 ) -> Optional[str]:
     """
     Downloader for Korean stations. Attempts to download rinex observables
@@ -149,16 +169,22 @@ def _download_korean_station(
     Should only be used internally by data_for_station
 
     TODO: we can download from multiple stations at once and save some time here....
+    TODO: separate network: ftp://gnss-ftp.kasi.re.kr and ftp://nfs.kasi.re.kr (IGS only?)
+        and https://gnss.eseoul.go.kr/timeselection
 
     Args:
         dog: laika AstroDog object
         time: laika GPSTime object
         station_name: string representation a station name
+        partial: whether to get "partial" (hourly) data
 
     Returns:
         string representing a path to the downloaded file
         or None, if the file was not able to be downloaded
     """
+    if partial:
+        raise NotImplementedError
+
     json_url = "http://gnssdata.or.kr/download/createToZip.json"
     zip_url = "http://gnssdata.or.kr/download/getZip.do?key=%d"
 
@@ -200,7 +226,7 @@ def _download_korean_station(
 
 
 def _download_japanese_station(
-    dog: AstroDog, time: GPSTime, station_name: str
+    dog: AstroDog, time: GPSTime, station_name: str, partial: bool = False
 ) -> Optional[str]:
     """
     Downloader for Japanese stations. Attempts to download rinex observables
@@ -211,6 +237,7 @@ def _download_japanese_station(
         dog: laika AstroDog object
         time: laika GPSTime object
         station_name: string representation a station name
+        partial: whether to get "partial" (hourly) data
 
     Returns:
         string representing a path to the downloaded file
@@ -220,9 +247,15 @@ def _download_japanese_station(
     t = time.as_datetime()
     # different path formats...
     folder_path = t.strftime("%Y/%j/")
-    filename = station_name + t.strftime("%j0.%yo")
 
-    url_bases = ("http://copyfighter.org:6670/japan/data/GR_2.11/",)
+    if partial:
+        # 'a' = 0, increment by one for each hour
+        timecode = char_code_for_partial(time)
+    else:
+        timecode = "0"
+    filename = station_name + t.strftime(f"%j{timecode}.%yo")
+
+    url_bases = ("https://copyfighter.org:6670/japan/data/GR_2.11/",)
     try:
         filepath = download_and_cache_file(
             url_bases, folder_path, cache_subdir, filename, compression=".gz"
@@ -230,6 +263,75 @@ def _download_japanese_station(
         return filepath
     except IOError:
         return None
+
+
+mongolian_csrf_info = {}
+
+
+def _get_mongolian_csrf() -> None:
+    """
+    We need a CSRF token to download things. This will load the page and populate
+    the tokens to be used
+    """
+    req = requests.get("http://monpos.gazar.gov.mn/monstatic")
+    mongolian_csrf_info["csrftoken"] = req.cookies["csrftoken"]
+
+    idx = req.text.index('value="', req.text.index("csrfmiddlewaretoken"))
+    mongolian_csrf_info["csrfmiddlewaretoken"] = req.text[idx + 7 : idx + 7 + 64]
+
+
+def _download_mongolian_station(
+    dog: AstroDog, time: GPSTime, station_name: str, partial: bool = False
+) -> Optional[str]:
+    """
+    Downloader for Mongolian stations. Attempts to download rinex observables
+    for the given station and time.
+    Should only be used internally by data_for_station
+
+    Args:
+        dog: laika AstroDog object
+        time: laika GPSTime object
+        station_name: string representation a station name
+        partial: whether to get "partial" (hourly) data
+
+    Returns:
+        string representing a path to the downloaded file
+        or None, if the file was not able to be downloaded
+    """
+    if partial:
+        raise NotImplementedError
+
+    cache_subdir = dog.cache_dir + "mongolian_obs/"
+    t = time.as_datetime()
+    # different path formats...
+    folder_path = cache_subdir + t.strftime("%Y/%j/")
+    if not os.path.exists(folder_path):
+        os.makedirs(folder_path, exist_ok=True)
+
+    mongolian_csrf_info
+    if not mongolian_csrf_info:
+        _get_mongolian_csrf()
+
+    datestr = t.strftime("%Y-%m-%d")
+    req = requests.post(
+        "http://monpos.gazar.gov.mn/download/" + station_name,
+        data={
+            "csrfmiddlewaretoken": mongolian_csrf_info["csrfmiddlewaretoken"],
+            "datepicker": datestr,
+        },
+        cookies={"csrftoken": mongolian_csrf_info["csrftoken"]},
+    )
+    if req.status_code != 200:
+        return None
+
+    disk_path = folder_path + station_name + t.strftime(".%yo")
+    with open(disk_path, "wb") as f:
+        decompressed = hatanaka.decompress(req.content)
+        # doesn't 404 I guess?
+        if b"<!DOCTYPE html>" in decompressed:
+            return None
+        f.write(decompressed)
+    return disk_path
 
 
 def cors_get_station_lists_for_day(date: datetime) -> Iterable[str]:
@@ -245,7 +347,7 @@ def cors_get_station_lists_for_day(date: datetime) -> Iterable[str]:
 
 
 def fetch_rinex_for_station(
-    dog: Optional[AstroDog], time: GPSTime, station_name: str
+    dog: Optional[AstroDog], time: GPSTime, station_name: str, partial: bool = False
 ) -> Optional[str]:
     """
     Given a particular time and station, get the rinex obs file that
@@ -256,6 +358,7 @@ def fetch_rinex_for_station(
         time: laika GPSTime object for the time in question
         station_name: string of the station in question
             station names are CORS names or similar (eg: 'slac')
+        partial: whether to fetch preliminary (hourly) data, if available
 
     Returns:
         the string containing the file path, or None
@@ -268,6 +371,7 @@ def fetch_rinex_for_station(
     handlers = {
         "Korea": _download_korean_station,
         "Japan": _download_japanese_station,
+        "Mongolia": _download_mongolian_station,
     }
 
     network = STATION_NETWORKS.get(station_name, None)
@@ -282,12 +386,14 @@ def fetch_rinex_for_station(
         except (KeyError, DownloadError):
             # station position not in CORS map, try another thing
             if station_name in STATION_LOCATIONS:
-                rinex_obs_file = _download_misc_igs_station(dog, time, station_name)
+                rinex_obs_file = _download_misc_igs_station(
+                    dog, time, station_name, partial=partial
+                )
             else:
                 return None
 
     else:
-        rinex_obs_file = handlers[network](dog, time, station_name)
+        rinex_obs_file = handlers[network](dog, time, station_name, partial=partial)
 
     return rinex_obs_file
 
@@ -351,6 +457,8 @@ def from_xarray_sat(rinex: xarray.Dataset, start_date: GPSTime) -> types.Observa
         Observations for the satellite
     """
     # truncate to observations with data
+    if "C1" not in rinex:
+        return cast(types.Observations, numpy.zeros(0, dtype=DENSE_TYPE))
     rinex = rinex.dropna("time", how="all", subset=["C1"])
     outp = numpy.zeros(rinex.dims["time"], dtype=DENSE_TYPE)
 
@@ -422,6 +530,42 @@ def data_for_station(
     return from_xarray(rinex, start_date)
 
 
+def get_sat_info_old_okay(
+    dog: AstroDog, start_time: GPSTime
+) -> Dict[str, Tuple[numpy.ndarray, numpy.ndarray, float, float]]:
+    """
+    Wrapper around dog.get_all_sat_info that will use out-of-date data for
+    GLONASS if we can't find any. GLONASS updates stuff real slow?
+
+    Args:
+        dog: AstroDog to use
+        start_time: time for which we want data
+
+    Returns:
+        dict of PRNs to (position, velocity, offset1, offset2)
+        same format as dog.get_all_sat_info
+    """
+    res = dog.get_all_sat_info(start_time)
+    # missing GLONASS data
+    if "R01" not in res:
+        # and looking at something < 2 days old
+        if GPSTime.from_datetime(datetime.utcnow()) - start_time < SECS_IN_DAY * 2:
+            for i in range(1, 4):
+                # most recent first, up to 3 days old
+                eph = dog.get_nav("R01", start_time - SECS_IN_DAY * i)
+                if eph:
+                    break
+            else:
+                # can't get GLONASS data, whatever
+                return res
+
+            for prn, ephs in dog.nav.items():
+                if not prn.startswith("R"):
+                    continue
+                res[prn] = ephs[-1].get_sat_info(start_time)
+    return res
+
+
 def populate_sat_info(
     dog: AstroDog,
     start_time: GPSTime,
@@ -440,7 +584,9 @@ def populate_sat_info(
     TODO: can numba (or something) help us parallelize the lower loops?
     """
 
-    satellites = {sat: idx for idx, sat in enumerate(dog.get_all_sat_info(start_time))}
+    satellites = {
+        sat: idx for idx, sat in enumerate(get_sat_info_old_okay(dog, start_time))
+    }
     tick_count = int(duration.total_seconds() / util.DATA_RATE)
     # get an accurate view of the satellites at 30 second intervals
     sat_info = numpy.zeros(
@@ -448,7 +594,7 @@ def populate_sat_info(
     )
 
     for tick in range(tick_count + 1):
-        tick_info = dog.get_all_sat_info(start_time + util.DATA_RATE * tick)
+        tick_info = get_sat_info_old_okay(dog, start_time + util.DATA_RATE * tick)
         for svid, info in tick_info.items():
             sat_info[satellites[svid]][tick] = (info[0], info[1])
 
@@ -491,7 +637,9 @@ def merge_data(
             combined[prn] = data2[prn]
         # otherwise we need an actual merge
         else:
-            combined[prn] = numpy.append(data1[prn], data2[prn])
+            combined[prn] = cast(
+                types.Observations, numpy.append(data1[prn], data2[prn])
+            )
 
     return cast(types.DenseMeasurements, combined)
 
@@ -560,32 +708,43 @@ def populate_data(
 
 
 def download_and_process(
-    argtuple: Tuple[GPSTime, str]
+    argtuple: Tuple[GPSTime, str, bool]
 ) -> Tuple[GPSTime, str, Optional[str]]:
     """
     Fetch the data for a station at a date, return a path to the NetCDF4 version of it
 
     Args:
-        argtuple: the date and station for which we want the data
+        argtuple: the date and station for which we want the data, and whether to get partial data
 
     Returns:
         date requested, station requested, and the path to the nc file, or
         None if it can't be retrieved
     """
-    date, station = argtuple
+    date, station, partial = argtuple
+
+    if partial:
+        char_code = char_code_for_partial(date)
+    else:
+        char_code = "0"
 
     # first search for already processed NetCDF4 files
-    path_name = date.as_datetime().strftime(f"%Y/%j/{station}%j0.%yo.nc")
-    for cache_folder in ["misc_igs_obs", "japanese_obs", "korean_obs", "cors_obs"]:
+    path_name = date.as_datetime().strftime(f"%Y/%j/{station}%j{char_code}.%yo.nc")
+    for cache_folder in [
+        "misc_igs_obs",
+        "japanese_obs",
+        "korean_obs",
+        "mongolian_obs",
+        "cors_obs",
+    ]:
         fname = f"{conf.cache_dir}/{cache_folder}/{path_name}"
         if os.path.exists(fname):
             return date, station, fname
 
-    rinex_obs_file = fetch_rinex_for_station(None, date, station)
+    rinex_obs_file = fetch_rinex_for_station(None, date, station, partial=partial)
     if rinex_obs_file is not None:
         if os.path.exists(rinex_obs_file + ".nc"):
             return date, station, rinex_obs_file + ".nc"
-        rinex = georinex.load(rinex_obs_file, interval=30)
+        rinex = georinex.load(rinex_obs_file, interval=30, use=["G", "R"], fast=False)
         rinex["time"] = rinex.time.astype(numpy.datetime64)
         rinex.to_netcdf(rinex_obs_file + ".nc")
         return date, station, rinex_obs_file + ".nc"
@@ -618,11 +777,14 @@ def parallel_populate_data(
     # dict of station names -> dict of prn -> numpy observation data
     station_data = cast(types.StationPrnMap[types.Observations], {})
 
+    # if we want < 1 day of data, get preliminary stuff
+    partial = duration.days < 1
+
     to_download = []
     for station in stations:
         gps_date = start_date
         while gps_date < start_date + duration.total_seconds():
-            to_download.append((gps_date, station))
+            to_download.append((gps_date, station, partial))
             gps_date += (1 * util.DAYS).total_seconds()
 
     with multiprocessing.Pool(DOWNLOAD_WORKERS) as pool:

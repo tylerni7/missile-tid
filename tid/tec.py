@@ -6,7 +6,7 @@ belong in here
 """
 from __future__ import annotations  # defer type annotations due to circular stuff
 
-from typing import TYPE_CHECKING, Optional, Tuple
+from typing import cast, TYPE_CHECKING, Optional, Tuple
 import numpy
 
 from laika import constants
@@ -69,7 +69,7 @@ def calc_delay_factor(connection: Connection) -> float:
         delay factor, in units of seconds^2
     """
     f1, f2 = connection.frequencies
-    return ((f1 ** 2) * (f2 ** 2)) / ((f1 ** 2) - (f2 ** 2))
+    return ((f1**2) * (f2**2)) / ((f1**2) - (f2**2))
 
 
 def calc_carrier_delays(connection: Connection, delay_factor: float) -> numpy.ndarray:
@@ -146,7 +146,9 @@ def calculate_vtecs(connection: Connection) -> numpy.ndarray:
     """
     delay_factor = calc_delay_factor(connection)
     delays = calc_carrier_delays(connection, delay_factor)
-    elevations = connection.elevation(connection.observations["sat_pos"])
+    elevations = connection.elevation(
+        cast(types.ECEF_XYZ, connection.observations["sat_pos"])
+    )
 
     # total electron count integrated across the whole ionosphere
     slant_tec = delays * delay_factor / K
@@ -180,9 +182,9 @@ def ion_locs(
     # pylint: disable=invalid-name
     a = numpy.sum((sat_pos - rec_pos) ** 2, axis=1)
     b = 2 * numpy.sum((sat_pos - rec_pos) * rec_pos, axis=1)
-    c = numpy.sum(rec_pos ** 2) - ionh ** 2
+    c = numpy.sum(rec_pos**2) - ionh**2
 
-    common = numpy.sqrt(b ** 2 - (4 * a * c)) / (2 * a)
+    common = numpy.sqrt(b**2 - (4 * a * c)) / (2 * a)
     b_scaled = -b / (2 * a)
     # TODO, I think the there is a clever way to vectorize the loop below
     # solutions = numpy.stack((b_scaled + common, b_scaled - common), axis=1)

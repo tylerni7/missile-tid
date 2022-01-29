@@ -15,6 +15,7 @@ from tid import types
 
 DATA_RATE = 30  # how many seconds / measurement
 DAYS = timedelta(days=1)
+HOURS = timedelta(hours=1)
 
 
 def gpstime_fromstr(timestr: str) -> GPSTime:
@@ -176,6 +177,9 @@ def segmenter(data_stream: numpy.ndarray) -> Sequence[int]:
             numpy.abs(numpy.diff(data_stream)), numpy.array([1, 1, 1, 1, 1]) / 5
         )
     )
-    return numpy.where(
-        numpy.abs(numpy.diff(data_stream, prepend=data_stream[0])) > diff * 5
-    )[0]
+    return cast(
+        Sequence[int],
+        numpy.where(
+            numpy.abs(numpy.diff(data_stream, prepend=data_stream[0])) > diff * 5
+        )[0],
+    )
