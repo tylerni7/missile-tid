@@ -23,6 +23,7 @@ kiwisolver==1.4.4
 laika @ git+https://github.com/commaai/laika@5eb0c3c2596dd12a232b83bdb057a716810e89cf
 matplotlib==3.6.2
 mccabe==0.7.0
+mpmath==1.2.1
 mypy==0.991
 mypy-extensions==0.4.3
 ncompress==1.0.0
@@ -48,6 +49,7 @@ scipy==1.9.3
 setuptools-scm==7.1.0
 Shapely==1.8.4
 six==1.16.0
+sympy==1.11.1
 tomli==2.0.1
 tqdm==4.64.1
 typing_extensions==4.4.0
