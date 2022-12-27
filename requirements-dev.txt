@@ -1,3 +1,4 @@
+atomicwrites==1.4.1
 attrs==22.2.0
 awkward==2.0.4
 awkward-cpp==5

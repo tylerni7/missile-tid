@@ -1,15 +1,25 @@
 [build-system]
 requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "tid"
-version = "0.1"
+version = "0.1.0"
 description = "Ionospheric measurements from GPS to detect launches."
-author = "Tyler Nighswander, Michael Nute"
-url = "https://github.com/tylerni7/missile-tid"
-license = "BSD (3-clause)"
+authors = [
+    {name = "Tyler Nighswander"},
+    {name = "Michael Nute"}
+]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Natural Language :: English",
+    "Programming Language :: Python :: 3",
+]
+license = {file = "LICENSE"}
+readme = "README.md"
 requires-python = ">=3.8"
 dependencies = [
+    "atomicwrites",
     "awkward",
     "cartopy",
     "georinex",
@@ -23,6 +33,9 @@ dependencies = [
     "scipy",
     "xarray"
 ]
+
+[project.urls]
+repository = "https://github.com/tylerni7/missile-tid"
 
 [tool.setuptools.packages.find]
 exclude = ["docs", "tests"]

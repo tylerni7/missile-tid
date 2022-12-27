@@ -1,3 +1,4 @@
+atomicwrites==1.4.1
 awkward==2.0.4
 awkward-cpp==5
 Cartopy==0.21.1
