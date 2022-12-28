@@ -65,18 +65,6 @@ module = [
 ]
 ignore_missing_imports = true
 
-[tool.pylint.'MESSAGES CONTROL']
-max-line-length = 100
-max-attributes = 12
-max-args = 10
-max-locals = 20
-min-public-methods = 0
-# accepted short names: i,j,k for iteration
-# t for time
-# f1,f2 for frequencies
-good-names = ["i,j,k,t,f1,f2"]
-ignore = ["tests"]
-
 [tool.coverage.run]
 source = ["tid"]
 
