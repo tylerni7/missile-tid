@@ -15,8 +15,8 @@ Following this, you should be able to install the requirements with
 `python -m pip install -r requirements.txt`
 
 ## Contributing
-Please ensure pylint and mypy are happy before pushing code.
-In the near future we can add in some tests and some github actions to enforce this.
+Please ensure all configured github workflows are green before requesting
+review.
 
 ## Authors
 Because of the refactor, this branch wiped out a lot of author information.
