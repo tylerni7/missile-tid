@@ -19,7 +19,7 @@ jobs:
         python-version: ${{ matrix.python-version }}
 
     - name: Install system-deps (for pycurl)
-      run: sudo apt-get install libcurl4-gnutls-dev libgnutls28-dev
+      run: sudo apt-get install -y libcurl4-openssl-dev libgeos-dev
     - name: Install Python packgaes
       run: |
         # These packages are installed in the base environment but may be older
