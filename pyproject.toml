@@ -1,3 +1,47 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tid"
+version = "0.1.0"
+description = "Ionospheric measurements from GPS to detect launches."
+authors = [
+    {name = "Tyler Nighswander"},
+    {name = "Michael Nute"}
+]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Natural Language :: English",
+    "Programming Language :: Python :: 3",
+]
+license = {file = "LICENSE"}
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "atomicwrites",
+    "awkward",
+    "cartopy",
+    "georinex",
+    "hatanaka",
+    "h5py",
+    "laika@git+https://github.com/commaai/laika#egg=laika",
+    "matplotlib",
+    "numpy",
+    "pyyaml",
+    "ruptures",
+    "scipy",
+    "sympy",
+    "xarray"
+]
+
+[project.urls]
+repository = "https://github.com/tylerni7/missile-tid"
+
+[tool.setuptools.packages.find]
+exclude = ["docs", "tests"]
+namespaces = false  # true by default
+
 [tool.mypy]
 python_version = "3.8"
 
@@ -23,12 +67,27 @@ ignore_missing_imports = true
 
 [tool.pylint.'MESSAGES CONTROL']
 max-line-length = 100
-max-attributes=12
-max-args=10
-max-locals=20
-min-public-methods=0
+max-attributes = 12
+max-args = 10
+max-locals = 20
+min-public-methods = 0
 # accepted short names: i,j,k for iteration
 # t for time
 # f1,f2 for frequencies
-good-names=['i,j,k,t,f1,f2']
-ignore=["tests"]
+good-names = ["i,j,k,t,f1,f2"]
+ignore = ["tests"]
+
+[tool.coverage.run]
+source = ["tid"]
+
+[tool.coverage.report]
+omit = [
+    "*/python?.?/*",
+    "*/site-packages/nose/*",
+    # ignore _version.py and versioneer.py
+    ".*version.*",
+    "*_version.py"
+]
+exclude_lines = [
+    "if __name__ == '__main__':"
+]
