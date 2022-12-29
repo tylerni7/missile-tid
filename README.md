@@ -6,7 +6,7 @@ This branch is in a "being rewritten" state.
 ## Setup
 Some platform-specific dependencies must be installed first:
 ### Ubuntu (20.04)
-`sudo apt install gcc g++ libcurl4-dev libgeos-dev proj-bin`
+`sudo apt install gcc g++ libcurl4-openssl-dev libgeos-dev proj-bin`
 ### MacOS
 `brew install proj`
 
