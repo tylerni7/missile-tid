@@ -1,20 +1,51 @@
-==========
-missile-tid
-==========
+===========
+Missile TID
+===========
 
-.. image:: https://img.shields.io/travis/tylerni7/missile-tid.svg
-        :target: https://travis-ci.org/tylerni7/missile-tid
+This library is designed to look for traveling ionospheric disturbances (TID).
 
-.. image:: https://img.shields.io/pypi/v/missile-tid.svg
-        :target: https://pypi.python.org/pypi/missile-tid
+Setup
+-----
 
+Some platform-specific dependencies must be installed first. Once this is done,
+you should be able to install the requirements with
 
-Ionospheric measurements from GPS to detect launches.
+`python -m pip install -r requirements.txt`
 
-* Free software: 3-clause BSD license
-* Documentation: (COMING SOON!) https://tylerni7.github.io/missile-tid.
+Ubuntu (20.04)
+~~~~~~~~~~~~~~
 
-Features
---------
+If in doubt, check the Dockerfile for an exact build recipe, as that will be 
+based on an Ubuntu image.
 
-* TODO
+`sudo apt install gcc g++ libcurl4-openssl-dev libgeos-dev`
+
+MacOS (Monterey/Ventura)
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+Most issues with getting up and running on MacOS are related to the Shapely
+library, which Cartopy imports. If you have issues installing either of these, 
+please see more about the pre-reqs here: https://scitools.org.uk/cartopy/docs/latest/installing.html.
+You should however only need the geos library, which can be installed with brew or macports:
+
+`brew install geos`
+
+If you still run into issues when producing the plots, for example with the error:
+```bash
+OSError: Could not find lib geos_c or load any of its variants
+```
+you must have a Python executable that is running on the same arch as the geos binaries
+you installed using brew. This may mean you have the wrong Anaconda version (`x86_64` vs `arm64`),
+as an example.
+
+Contributing
+------------
+Please refer to `CONTRIBUTING.rst`.
+
+Authors
+-------
+Because of the refactor, this branch wiped out a lot of author information.
+
+This code was primarily written by @tylerni7 and @MGNute
+
+Further contribution from @tinfoil-globe, @Tobychev, and @jmccartin
