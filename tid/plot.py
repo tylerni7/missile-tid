@@ -2,6 +2,7 @@
 Helpful plotting functions for TID results
 """
 from datetime import timedelta
+from pathlib import Path
 from typing import Iterable, Optional, Tuple
 
 import cartopy
@@ -126,3 +127,15 @@ def plot_map(
     if display:
         plt.show()
     return ani
+
+
+def save_plot(anim: animation.Animation, name: str, path: Path) -> None:
+    """
+    Plot an animated map of the scenario's filtered VTEC values
+
+    Args:
+        anim: The matplotlib animation to save
+        name: The name of the animation
+        path: The directory in which to save the animation
+    """
+    anim.save((path / f"{name}.gif").as_posix(), writer="imagemagick", fps=60)
