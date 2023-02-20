@@ -18,7 +18,6 @@ conf = Configuration()
 
 
 def main(output_path: Optional[Path] = None):
-
     # create our helpful astro dog
     dog = AstroDog(cache_dir=conf.cache_dir)
 
@@ -59,7 +58,6 @@ def main(output_path: Optional[Path] = None):
 
 
 if __name__ == "__main__":
-
     parser = argparse.ArgumentParser()
 
     parser.add_argument(

@@ -799,7 +799,6 @@ def parallel_populate_data(
     for station in stations:
         gps_date = start_date
         while gps_date < start_date + duration.total_seconds():
-
             result = downloaded_map.get((gps_date.week, gps_date.tow, station))
             gps_date += (1 * util.DAYS).total_seconds()
 
