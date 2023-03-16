@@ -351,7 +351,7 @@ class Scenario:
         if (
             chan is None
             and prn in self.dog.nav
-            and GPSTime.from_datetime(datetime.utcnow()) - time < SECS_IN_DAY * 2
+#            and GPSTime.from_datetime(datetime.utcnow()) - time < SECS_IN_DAY * 2
         ):
             chan = self.dog.nav[prn][-1].channel
         return chan

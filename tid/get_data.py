@@ -86,6 +86,7 @@ def get_nearby_stations(
         a list of strings representing station names close to the target point
     """
     cache_dir = dog.cache_dir
+    """
     cors_pos_path = cache_dir + "cors_coord/cors_station_positions"
     with open(cors_pos_path, "rb") as cors_pos:
         # pylint:disable=unexpected-keyword-arg
@@ -97,6 +98,9 @@ def get_nearby_stations(
     for name, (_, pos, _) in cors_pos_dict.items():
         station_names.append(name)
         station_pos.append(pos)
+    """
+    station_names = []
+    station_pos = []
     for name, pos in STATION_LOCATIONS.items():
         station_names.append(name)
         station_pos.append(pos)
@@ -391,6 +395,9 @@ def fetch_rinex_for_station(
                 )
             else:
                 return None
+        except hatanaka.hatanaka.HatanakaException:
+            # not gonna handle this ourselves, sadly
+            return None
 
     else:
         rinex_obs_file = handlers[network](dog, time, station_name, partial=partial)
@@ -596,6 +603,8 @@ def populate_sat_info(
     for tick in range(tick_count + 1):
         tick_info = get_sat_info_old_okay(dog, start_time + util.DATA_RATE * tick)
         for svid, info in tick_info.items():
+            if svid not in satellites:
+                continue 
             sat_info[satellites[svid]][tick] = (info[0], info[1])
 
     bad_datas = set()
@@ -786,7 +795,10 @@ def parallel_populate_data(
         gps_date = start_date
         while gps_date < start_date + duration.total_seconds():
             to_download.append((gps_date, station, partial))
-            gps_date += (1 * util.DAYS).total_seconds()
+            if partial:
+                gps_date += (1 * util.HOURS).total_seconds()
+            else:
+                gps_date += (1 * util.DAYS).total_seconds()
 
     with multiprocessing.Pool(DOWNLOAD_WORKERS) as pool:
         download_res = pool.map(download_and_process, to_download)
@@ -801,7 +813,10 @@ def parallel_populate_data(
         gps_date = start_date
         while gps_date < start_date + duration.total_seconds():
             result = downloaded_map.get((gps_date.week, gps_date.tow, station))
-            gps_date += (1 * util.DAYS).total_seconds()
+            if partial:
+                gps_date += (1 * util.HOURS).total_seconds()
+            else:
+                gps_date += (1 * util.DAYS).total_seconds()
 
             if result is None:
                 continue

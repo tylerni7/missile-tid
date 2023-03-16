@@ -86,7 +86,7 @@ def plot_map(
     vtec_map, coord_map = scenario.get_vtec_data(raw=raw)
 
     def animate(i):
-        title.set_text(str(timedelta(seconds=i * 30) + scenario.start_date))
+        title.set_text(str(timedelta(seconds=i * 30) + scenario.start_date)+" UTC")
 
         lons = []
         lats = []
@@ -103,7 +103,8 @@ def plot_map(
                 vals.append(vtec_map[station][prn][i])
 
         scatter.set_offsets(numpy.array((lons, lats)).T)
-        scale = (0, 50) if raw else (-TID_SCALE, TID_SCALE)
+        # scale = (0, 25) if raw else (-TID_SCALE, TID_SCALE)
+        scale = (20, 30) if raw else (-TID_SCALE, TID_SCALE)
         nvals = numpy.array(vals)
         if len(nvals) > 0:
             # re-center about 0 and clip
@@ -123,7 +124,8 @@ def plot_map(
         repeat=True,
         interval=60,
     )
-    plt.tight_layout()
+    axis.figure.tight_layout(pad=0.0, w_pad=0.0, h_pad=0.0)
+    axis.figure.subplots_adjust(left=0, bottom=0, right=1, top=1, wspace=None, hspace=None)
     if display:
         plt.show()
     return ani
