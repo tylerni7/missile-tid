@@ -117,10 +117,15 @@ while tick < count:
     sc.solve_biases()
 
     conf.logger.info("Preparing animation")
-    extent = (123, 140, 33, 43)
+    extent = (123, 149, 33, 48)
 
-    ani = plot.plot_map(sc, extent=extent, frames=range(0, 120), display=False)
-    ani.save(f"{output_folder}/{date.strftime('%Y-%m-%d_%H')}.gif")
+    ani = plot.plot_map(
+        sc, extent=extent, frames=range(1, 119), raw=False, display=False
+    )
+    ani.save(
+        f"{output_folder}/{date.strftime('%Y-%m-%d_%H')}_wide_short_borders_350km.mp4",
+        dpi=350,
+    )
 
     next_time = next_update(datetime.datetime.utcnow())
     tick += 1
