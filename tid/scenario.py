@@ -347,10 +347,7 @@ class Scenario:
             observations[0]["tick"]
         )
         chan = self.dog.get_glonass_channel(prn, time)
-        if (
-            chan is None
-            and prn in self.dog.nav
-        ):
+        if chan is None and prn in self.dog.nav:
             chan = self.dog.nav[prn][-1].channel
         return chan
 
