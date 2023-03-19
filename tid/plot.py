@@ -75,9 +75,8 @@ def plot_map(
     """
     axis = plt.axes(projection=cartopy.crs.PlateCarree())
     axis.clear()
-    axis.add_feature(cpf.COASTLINE.with_scale('10m'))
-    axis.add_feature(cpf.BORDERS.with_scale('10m'), edgecolor='gray', linewidth=0.3)
-
+    axis.add_feature(cpf.COASTLINE.with_scale("10m"))
+    axis.add_feature(cpf.BORDERS.with_scale("10m"), edgecolor="gray", linewidth=0.3)
 
     scatter = axis.scatter([], [])
     title = plt.title("Date")
