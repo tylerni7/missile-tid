@@ -54,6 +54,9 @@ with open(
 ) as f:
     STATION_NETWORKS = json.load(f)
 
+# cache working proxies for the whole run
+VERIFIED_PROXIES = {}
+
 conf = config.Configuration()
 
 
@@ -172,13 +175,18 @@ def get_korean_proxy() -> Optional[Dict[str, str]]:
     proxy_list = conf.proxies.get("KR", [])
     for proxy in random.sample(proxy_list, len(proxy_list)):
         proxies = {"https": f"socks5://{proxy}"}
-        try:
-            req = requests.get(target, proxies=proxies, timeout=10)
-        except (requests.ConnectTimeout, requests.ConnectionError):
-            continue
-        if req.status_code == 200:
-            print(proxy)
+        verified = VERIFIED_PROXIES.get(proxy, None)
+        if verified:
             return proxies
+        elif verified is None:
+            try:
+                req = requests.get(target, proxies=proxies, timeout=10)
+            except (requests.ConnectTimeout, requests.ConnectionError):
+                VERIFIED_PROXIES[proxy] = False
+                continue
+            if req.status_code == 200:
+                VERIFIED_PROXIES[proxy] = True
+                return proxies
 
     raise DownloadError
 
@@ -201,8 +209,6 @@ def _download_korean_stations(
         dictionary mapping station names to the path to the downloaded
         file. Stations not present means their data could not be downloaded
     """
-    proxies = get_korean_proxy()
-
     json_url = "https://gnssdata.or.kr/download/createToZip.json"
     zip_url = "https://gnssdata.or.kr/download/getZip.do?key=%d"
 
@@ -229,6 +235,8 @@ def _download_korean_stations(
 
     if len(pending.keys()) == 0:
         return res
+    
+    proxies = get_korean_proxy()
     start_day = t.strftime("%Y%m%d")
     postdata = {
         "corsId": ",".join(list(pending.keys())),
