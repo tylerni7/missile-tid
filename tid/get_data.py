@@ -269,7 +269,7 @@ def _download_korean_stations(
         "corsId": ",".join(list(pending.keys())),
         "obsStDay": start_day,
         "obsEdDay": start_day,
-        "dataTyp": util.DATA_RATE,
+        "dataTyp": "01" if partial else util.DATA_RATE,
     }
 
     if partial:
@@ -281,24 +281,29 @@ def _download_korean_stations(
     if not post_res:
         raise DownloadError
     res_dat = json.loads(post_res)
-    if not res_dat.get("result", None) or "key" not in res_dat:
+    if not res_dat.get("result", None):
         raise DownloadError
+    if "key" not in res_dat:
+        raise RetryError
 
     key = res_dat["key"]
     zipstream = requests.get(zip_url % key, proxies=proxies, stream=True)
-    with zipfile.ZipFile(io.BytesIO(zipstream.content)) as zipdat:
-        for zipf in zipdat.filelist:
-            with zipfile.ZipFile(io.BytesIO(zipdat.read(zipf))) as station:
-                for rinex in station.filelist:
-                    if rinex.filename.endswith("o"):
-                        stationname, filename = pending.get(
-                            rinex.filename[:4], (None, None)
-                        )
-                        if filename is None or stationname is None:
-                            continue
-                        with open(filename, "wb") as rinex_out:
-                            rinex_out.write(station.read(rinex))
-                            res[stationname] = str(filename)
+    try:
+        with zipfile.ZipFile(io.BytesIO(zipstream.content)) as zipdat:
+            for zipf in zipdat.filelist:
+                with zipfile.ZipFile(io.BytesIO(zipdat.read(zipf))) as station:
+                    for rinex in station.filelist:
+                        if rinex.filename.endswith("o"):
+                            stationname, filename = pending.get(
+                                rinex.filename[:4], (None, None)
+                            )
+                            if filename is None or stationname is None:
+                                continue
+                            with open(filename, "wb") as rinex_out:
+                                rinex_out.write(station.read(rinex))
+                                res[stationname] = str(filename)
+    except zipfile.BadZipFile:
+        raise DownloadError
     return res
 
 
@@ -914,6 +919,7 @@ def parallel_populate_data(
         gps_date = start_date
         while gps_date < start_date + duration.total_seconds():
             result = downloaded_map.get((gps_date.week, gps_date.tow, station))
+            prev_gps_date = gps_date
             if partial:
                 gps_date += (1 * util.HOURS).total_seconds()
             else:
@@ -923,6 +929,8 @@ def parallel_populate_data(
                 continue
 
             latest_data = xarray.load_dataset(result)
+            latest_data = latest_data.drop_isel(time=numpy.where(latest_data["time"] < numpy.datetime64(prev_gps_date.as_datetime()))[0])
+            latest_data = latest_data.drop_isel(time=numpy.where(latest_data["time"] > numpy.datetime64(gps_date.as_datetime()))[0])
             if station not in station_locs:
                 station_locs[station] = latest_data.position
 

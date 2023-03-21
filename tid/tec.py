@@ -21,9 +21,9 @@ if TYPE_CHECKING:
 K = 40.308e16
 M_TO_TEC = 6.158  # meters of L1 error to TEC
 # set ionosphere puncture to 350km
-IONOSPHERE_H = constants.EARTH_RADIUS + 350000
+IONOSPHERE_H = constants.EARTH_RADIUS + 450000
 # maximum density of electrons for slant calculation
-IONOSPHERE_MAX_D = constants.EARTH_RADIUS + 350000
+IONOSPHERE_MAX_D = constants.EARTH_RADIUS + 450000
 C = constants.SPEED_OF_LIGHT
 
 
