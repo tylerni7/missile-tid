@@ -929,8 +929,16 @@ def parallel_populate_data(
                 continue
 
             latest_data = xarray.load_dataset(result)
-            latest_data = latest_data.drop_isel(time=numpy.where(latest_data["time"] < numpy.datetime64(prev_gps_date.as_datetime()))[0])
-            latest_data = latest_data.drop_isel(time=numpy.where(latest_data["time"] > numpy.datetime64(gps_date.as_datetime()))[0])
+            latest_data = latest_data.drop_isel(
+                time=numpy.where(
+                    latest_data["time"] < numpy.datetime64(prev_gps_date.as_datetime())
+                )[0]
+            )
+            latest_data = latest_data.drop_isel(
+                time=numpy.where(
+                    latest_data["time"] > numpy.datetime64(gps_date.as_datetime())
+                )[0]
+            )
             if station not in station_locs:
                 station_locs[station] = latest_data.position
 
