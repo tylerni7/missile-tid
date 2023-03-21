@@ -2,13 +2,16 @@
 Common datatypes, so we can have functions be more clear about
 return values than saying "numpy.array"
 """
-from typing import Dict, TypeVar
+from typing import Any, Callable, Dict, TypeVar
 
 import numpy
 
 # placeholder type generic name
 # pylint: disable=invalid-name
 T = TypeVar("T")
+
+# placeholder type for generic functions
+FuncT = TypeVar("FuncT", bound=Callable[..., Any])
 
 
 class StationPrnMap(Dict[str, Dict[str, T]]):

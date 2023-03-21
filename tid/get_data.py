@@ -9,9 +9,9 @@ import multiprocessing
 import os
 import random
 import re
-from typing import cast, Dict, Iterable, Optional, Sequence, Tuple
+import time
+from typing import cast, Any, Dict, Iterable, Optional, Sequence, Tuple
 import zipfile
-from laika.constants import SECS_IN_DAY
 
 import numpy
 import requests
@@ -21,6 +21,7 @@ import georinex
 import xarray
 
 from laika import AstroDog
+from laika.constants import SECS_IN_DAY
 from laika.dgps import get_station_position
 from laika.downloader import download_cors_station, download_and_cache_file
 from laika.gps_time import GPSTime
@@ -55,9 +56,34 @@ with open(
     STATION_NETWORKS = json.load(f)
 
 # cache working proxies for the whole run
-VERIFIED_PROXIES = {}
+VERIFIED_PROXIES: Dict[str, bool] = {}
 
 conf = config.Configuration()
+
+
+class RetryError(Exception):
+    """
+    An error thrown when something goes awry but should be retried
+    """
+
+
+def retryable(fn: types.FuncT) -> types.FuncT:
+    """
+    Decorator to try running the given function and retry it with a short
+    delay in the case of a RetryError.
+
+    After 5 tries, give up and throw a DownloadError
+    """
+
+    def wrapped(*args, **kwargs):
+        for _ in range(5):
+            try:
+                return fn(*args, **kwargs)
+            except RetryError:
+                time.sleep(5)
+        raise DownloadError
+
+    return cast(types.FuncT, wrapped)
 
 
 def char_code_for_partial(time: GPSTime) -> str:
@@ -191,6 +217,7 @@ def get_korean_proxy() -> Optional[Dict[str, str]]:
     raise DownloadError
 
 
+@retryable
 def _download_korean_stations(
     dog: AstroDog, time: GPSTime, station_names: Iterable[str], partial: bool = False
 ) -> Dict[str, str]:
@@ -235,7 +262,7 @@ def _download_korean_stations(
 
     if len(pending.keys()) == 0:
         return res
-    
+
     proxies = get_korean_proxy()
     start_day = t.strftime("%Y%m%d")
     postdata = {
@@ -254,7 +281,7 @@ def _download_korean_stations(
     if not post_res:
         raise DownloadError
     res_dat = json.loads(post_res)
-    if not res_dat.get("result", None):
+    if not res_dat.get("result", None) or "key" not in res_dat:
         raise DownloadError
 
     key = res_dat["key"]
@@ -267,10 +294,11 @@ def _download_korean_stations(
                         stationname, filename = pending.get(
                             rinex.filename[:4], (None, None)
                         )
-                        if filename is not None:
-                            with open(filename, "wb") as rinex_out:
-                                rinex_out.write(station.read(rinex))
-                                res[stationname] = filename
+                        if filename is None or stationname is None:
+                            continue
+                        with open(filename, "wb") as rinex_out:
+                            rinex_out.write(station.read(rinex))
+                            res[stationname] = str(filename)
     return res
 
 
