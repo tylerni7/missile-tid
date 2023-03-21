@@ -28,8 +28,8 @@ class Configuration:
         """
         self.config_file = config_file
 
-        with open(self.config_file, encoding="utf-8") as fname:
-            self.conf = yaml.safe_load(fname)
+        with open(self.config_file, encoding="utf-8") as conf_file:
+            self.conf = yaml.safe_load(conf_file)
             self.cache_dir = os.path.expanduser(self.conf["cache_dir"])
             self.logging = self.conf.get("logging", {})
             self.log_level = self.logging.get("level", logging.WARNING)
@@ -41,6 +41,7 @@ class Configuration:
             self.logger = logging.getLogger("tid")
 
             self.credentials = self.conf.get("credentials", {})
+            self.proxies = self.conf.get("proxies", {})
 
         if self.credentials:
             if "nasa_username" in self.credentials:

@@ -7,6 +7,7 @@ import json
 import logging
 import multiprocessing
 import os
+import random
 import re
 from typing import cast, Dict, Iterable, Optional, Sequence, Tuple
 import zipfile
@@ -150,6 +151,122 @@ def _download_misc_igs_station(
             return None
 
 
+def get_korean_proxy() -> Optional[Dict[str, str]]:
+    """
+    Searches for a Korean SOCKS proxy that is capable of accessing gnssdata.or.kr
+
+    Returns:
+        the requests proxies dictionary, or None if no proxy is required.
+
+    Raises:
+        DownloadError if a stable connection to gnssdata.or.kr isn't available
+    """
+    target = "https://gnssdata.or.kr"
+    try:
+        req = requests.get(target, timeout=10)
+        if req.status_code == 200:
+            return None
+    except (requests.ConnectTimeout, requests.ConnectionError):
+        pass
+
+    proxy_list = conf.proxies.get("KR", [])
+    for proxy in random.sample(proxy_list, len(proxy_list)):
+        proxies = {"https": f"socks5://{proxy}"}
+        try:
+            req = requests.get(target, proxies=proxies, timeout=10)
+        except (requests.ConnectTimeout, requests.ConnectionError):
+            continue
+        if req.status_code == 200:
+            print(proxy)
+            return proxies
+
+    raise DownloadError
+
+
+def _download_korean_stations(
+    dog: AstroDog, time: GPSTime, station_names: Iterable[str], partial: bool = False
+) -> Dict[str, str]:
+    """
+    Downloader for Korean stations. Attempts to download rinex observables
+    for several stations concurrently and one time.
+    Should only be used internally by data_for_station
+
+    Args:
+        dog: laika AstroDog object
+        time: laika GPSTime object
+        station_names: list of strings representing station names
+        partial: whether to get "partial" (hourly) data
+
+    Returns:
+        dictionary mapping station names to the path to the downloaded
+        file. Stations not present means their data could not be downloaded
+    """
+    proxies = get_korean_proxy()
+
+    json_url = "https://gnssdata.or.kr/download/createToZip.json"
+    zip_url = "https://gnssdata.or.kr/download/getZip.do?key=%d"
+
+    res = {}
+
+    cache_subdir = dog.cache_dir + "korean_obs/"
+    t = time.as_datetime()
+    # different path formats...
+    folder_path = cache_subdir + t.strftime("%Y/%j/")
+    partial_code = char_code_for_partial(time) if partial else "0"
+
+    cached = []
+    pending = {}
+    for station_name in station_names:
+        filename = folder_path + station_name + t.strftime(f"%j{partial_code}.%yo")
+
+        if os.path.isfile(filename):
+            res[station_name] = filename
+            cached.append(station_name)
+            continue
+        if not os.path.exists(folder_path):
+            os.makedirs(folder_path, exist_ok=True)
+        pending[station_name.upper()] = (station_name, filename)
+
+    if len(pending.keys()) == 0:
+        return res
+    start_day = t.strftime("%Y%m%d")
+    postdata = {
+        "corsId": ",".join(list(pending.keys())),
+        "obsStDay": start_day,
+        "obsEdDay": start_day,
+        "dataTyp": util.DATA_RATE,
+    }
+
+    if partial:
+        start_hour = int((time.tow / (60 * 60)) % 24)
+        postdata["obsStHour"] = str(start_hour)
+        postdata["obsEdHour"] = str(start_hour)
+
+    post_res = requests.post(json_url, data=postdata, proxies=proxies).text
+    if not post_res:
+        raise DownloadError
+    res_dat = json.loads(post_res)
+    if not res_dat.get("result", None):
+        raise DownloadError
+
+    key = res_dat["key"]
+    zipstream = requests.get(zip_url % key, proxies=proxies, stream=True)
+    with zipfile.ZipFile(io.BytesIO(zipstream.content)) as zipdat:
+        for zipf in zipdat.filelist:
+            with zipfile.ZipFile(io.BytesIO(zipdat.read(zipf))) as station:
+                for rinex in station.filelist:
+                    if rinex.filename.endswith("o"):
+                        stationname, filename = pending.get(
+                            rinex.filename[:4], (None, None)
+                        )
+                        if not filename:
+                            continue
+                        with open(filename, "wb") as rinex_out:
+                            rinex_out.write(station.read(rinex))
+                            res[stationname] = filename
+    return res
+
+
 def _download_korean_station(
     dog: AstroDog, time: GPSTime, station_name: str, partial: bool = False
 ) -> Optional[str]:
@@ -158,7 +275,6 @@ def _download_korean_station(
     for the given station and time.
     Should only be used internally by data_for_station
 
-    TODO: we can download from multiple stations at once and save some time here....
     TODO: separate network: ftp://gnss-ftp.kasi.re.kr and ftp://nfs.kasi.re.kr (IGS only?) and
         https://gnss.eseoul.go.kr/timeselection
 
@@ -172,47 +288,8 @@ def _download_korean_station(
         string representing a path to the downloaded file
         or None, if the file was not able to be downloaded
     """
-    if partial:
-        raise NotImplementedError
-
-    json_url = "http://gnssdata.or.kr/download/createToZip.json"
-    zip_url = "http://gnssdata.or.kr/download/getZip.do?key=%d"
-
-    cache_subdir = dog.cache_dir + "korean_obs/"
-    t = time.as_datetime()
-    # different path formats...
-    folder_path = cache_subdir + t.strftime("%Y/%j/")
-    filename = folder_path + station_name + t.strftime("%j0.%yo")
-
-    if os.path.isfile(filename):
-        return filename
-    if not os.path.exists(folder_path):
-        os.makedirs(folder_path, exist_ok=True)
-
-    start_day = t.strftime("%Y%m%d")
-    postdata = {
-        "corsId": station_name.upper(),
-        "obsStDay": start_day,
-        "obsEdDay": start_day,
-        "dataTyp": util.DATA_RATE,
-    }
-    res = requests.post(json_url, data=postdata).text
-    if not res:
-        raise DownloadError
-    res_dat = json.loads(res)
-    if not res_dat.get("result", None):
-        raise DownloadError
-
-    key = res_dat["key"]
-    zipstream = requests.get(zip_url % key, stream=True)
-    with zipfile.ZipFile(io.BytesIO(zipstream.content)) as zipdat:
-        for zipf in zipdat.filelist:
-            with zipfile.ZipFile(io.BytesIO(zipdat.read(zipf))) as station:
-                for rinex in station.filelist:
-                    if rinex.filename.endswith("o"):
-                        with open(filename, "wb") as rinex_out:
-                            rinex_out.write(station.read(rinex))
-    return filename
+    res = _download_korean_stations(dog, time, [station_name], partial=partial)
+    return res[station_name]
 
 
 def _download_japanese_station(
