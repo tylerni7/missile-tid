@@ -259,11 +259,10 @@ def _download_korean_stations(
                         stationname, filename = pending.get(
                             rinex.filename[:4], (None, None)
                         )
-                        if not filename:
-                            continue
-                        with open(filename, "wb") as rinex_out:
-                            rinex_out.write(station.read(rinex))
-                            res[stationname] = filename
+                        if filename is not None:
+                            with open(filename, "wb") as rinex_out:
+                                rinex_out.write(station.read(rinex))
+                                res[stationname] = filename
     return res
 
 
@@ -288,8 +287,11 @@ def _download_korean_station(
         string representing a path to the downloaded file
         or None, if the file was not able to be downloaded
     """
-    res = _download_korean_stations(dog, time, [station_name], partial=partial)
-    return res[station_name]
+    try:
+        res = _download_korean_stations(dog, time, [station_name], partial=partial)
+        return res.get(station_name)
+    except DownloadError:
+        return None
 
 
 def _download_japanese_station(
