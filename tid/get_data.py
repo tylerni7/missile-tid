@@ -10,7 +10,7 @@ import os
 import random
 import re
 import time
-from typing import cast, Any, Dict, Iterable, Optional, Sequence, Tuple
+from typing import cast, Dict, Iterable, Optional, Sequence, Tuple
 import zipfile
 
 import numpy
