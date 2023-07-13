@@ -4,7 +4,7 @@ between satellites and ground stations.
 Things to manage those are stored here
 """
 from __future__ import annotations  # defer type annotations due to circular stuff
-import collections
+import collections.abc as collections
 from functools import cached_property
 from typing import (
     cast,
