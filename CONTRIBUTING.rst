@@ -61,11 +61,16 @@ Ready to contribute? Here's how to set up `tid` for local development.
 
     $ git clone git@github.com:your_name_here/missile-tid.git
 
-3. Install your local copy into a virtualenv. Assuming you have virtualenvwrapper installed, this is how you set up your fork for local development::
+3. Install your local copy into a `conda` environment (for example, virtualenv or just in your local environment should
+work too, though some specifics may differ). The commands below follow the instructions in the README:
 
-    $ mkvirtualenv missile-tid
-    $ cd missile-tid/
-    $ python setup.py develop
+    $ sudo apt install gcc g++ libcurl4-openssl-dev libgeos-dev
+    $ conda create --name missiletid python=3.10
+    $ conda activate missiletid
+    $ pip install -r requirements-dev.txt
+    $ pip install -e ./
+    $ conda install pycurl
+    $ pip install --force-reinstall shapely --no-binary shapely
 
 4. Create a branch for local development::
 
@@ -76,10 +81,11 @@ Ready to contribute? Here's how to set up `tid` for local development.
 5. When you're done making changes, check that your changes pass flake8 and the tests, including testing other Python versions with tox::
 
     $ flake8 tid tests
-    $ python setup.py test
+    $ # python setup.py test
     $ tox
 
-   To get flake8 and tox, just pip install them into your virtualenv.
+   To get flake8 and tox, just pip install them into your virtualenv. (Note that since the refactor, `setup.py` has been removed
+so tests will have to be run separately.)
 
 6. Commit your changes and push your branch to GitHub::
 
