@@ -7,12 +7,9 @@ when they travel through the ionosphere.
 
 ## Setup
 
-Some platform-specific dependencies must be installed first. Once this is done,
-you should be able to install the requirements with
+Some platform-specific dependencies must be installed first. 
 
-`python -m pip install -r requirements.txt`
-
-### Ubuntu (20.04)
+#### Ubuntu (20.04)
 
 If in doubt, check the Dockerfile for an exact build recipe, as that will be 
 based on an Ubuntu image.
@@ -36,6 +33,21 @@ you must have a Python executable that is running on the same arch as the geos b
 you installed using brew. This may mean you have the wrong Anaconda version (`x86_64` vs `arm64`),
 as an example.
 
+## Installing
+
+Once dependencies are installed, you should be able to install the requirements with:
+
+`python -m pip install -r requirements.txt`
+
+For development, use `requirements-dev.txt` instead. After that, install directly from within the repository:
+
+`python -m pip install -e ./`
+
+For the time being one final step is required: manually make a copy of the example config
+file and rename it as `configuration.yml`. The following command should do this:
+
+`cp config/configuration.yml.example config/configuration.yml`
+
 ## Running the demos
 
 There are currently two demos available to produce animations of the TID about an area:
@@ -44,7 +56,15 @@ There are currently two demos available to produce animations of the TID about a
 
 ### Common errors
 
-* If you receive the error: `free(): invalid size` when producing the animation, then you must compile Cartopy from source, and not from a built wheel. Eg: `pip install --upgrade --no-binary shapely shapely==1.8.4`
+* In some cases the version of `pycurl` that is installed from the requirements
+file has a problem where `libffi` is pointing to the wrong version. Reinstalling
+`pycurl` manually via `pip` (or `conda` if using that) without the version specifier
+seems to fix this.
+* If you receive the error: `free(): invalid size` when producing the animation, 
+then you must compile Shapely from source. The command `pip install --force-reinstall 
+shapely --no-binary shapely` should work for this. 
+    * It may be necessary to install `Cython` prior to the shapely reinstall, in which
+        case it can be installed via `pip` or `conda` as usual.
 
 ## Contributing
 
