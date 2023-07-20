@@ -62,7 +62,7 @@ Ready to contribute? Here's how to set up `tid` for local development.
     $ git clone git@github.com:your_name_here/missile-tid.git
 
 3. Install your local copy into a `conda` environment (for example, virtualenv or just in your local environment should
-work too, though some specifics may differ). The commands below follow the instructions in the README:
+work too, though some specifics may differ). The commands below follow the instructions in the README::
 
     $ sudo apt install gcc g++ libcurl4-openssl-dev libgeos-dev
     $ conda create --name missiletid python=3.10
