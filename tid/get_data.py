@@ -367,7 +367,7 @@ def fetch_rinex_for_station(
     network = STATION_NETWORKS.get(station_name, None)
 
     # no special network, so try using whatever
-    if network is None:
+    if network is None or network.lower()=='us':
         # step 1: get the station rinex data
         try:
             rinex_obs_file = download_cors_station(

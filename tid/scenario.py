@@ -253,6 +253,10 @@ class Scenario:
         # add a degree of padding around the edge
         return min_lon - 1, max_lon + 1, min_lat - 1, max_lat + 1
 
+    @property
+    def tick_count(self) -> int:
+        return int(self.duration.total_seconds() / util.DATA_RATE)
+
     def get_vtec_data(
         self,
         raw: bool = False,
