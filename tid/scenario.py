@@ -67,6 +67,7 @@ class Scenario:
         self.start_date = start_date
         self.date_list = _get_dates_in_range(start_date, duration)
         self.duration = duration
+        self._known_freqs = {}
 
         self.station_locs = station_locs
         self.station_data = station_data
@@ -309,7 +310,7 @@ class Scenario:
         max_obs = len(stations) * len(sats)
 
         res = numpy.zeros(
-            (tick_count, max_obs), dtype=[("vtec", "f8"), ("latlon", "2f8")]
+            (tick_count, max_obs), dtype=[("vtec", "f4"), ("fvtec","f4"), ("latlon", "2f8")]
         )
 
         for station in self.conn_map.keys():
@@ -318,13 +319,14 @@ class Scenario:
                 sat_idx = sats.index(prn)
                 if not self.conn_map[station][prn].connections:
                     continue
-                vtecs = self.conn_map[station][prn].get_filtered_vtecs()
+                fvtecs = self.conn_map[station][prn].get_filtered_vtecs()
+                vtecs = self.conn_map[station][prn].get_vtecs()
                 ipps = self.conn_map[station][prn].get_ipps_latlon()
                 for tick in range(tick_count):
                     latlon = ipps[tick]
                     if latlon is None:
                         continue
-                    res[tick][station_idx * len(sats) + sat_idx] = (vtecs[tick], latlon)
+                    res[tick][station_idx * len(sats) + sat_idx] = (vtecs[tick], fvtecs[tick], latlon)
         with h5py.File(fname, "w") as fout:
             fout.create_dataset("data", data=res, compression="gzip")
 
@@ -347,8 +349,8 @@ class Scenario:
             observations[0]["tick"]
         )
         chan = self.dog.get_glonass_channel(prn, time)
-        if chan is None and prn in self.dog.nav:
-            chan = self.dog.nav[prn][-1].channel
+        if chan is None and self.dog.navs.get(prn):
+            chan = self.dog.navs[prn][-1].channel
         return chan
 
     def get_frequencies(
@@ -377,7 +379,7 @@ class Scenario:
                     f1 = GLONASS_L1 + channel + GLONASS_L1_DELTA
                     f2 = GLONASS_L2 + channel + GLONASS_L2_DELTA
                     return f1, f2
-            return None
+            return self._known_freqs.get(prn)
         return f1, f2
 
     def _get_connections_internal(
@@ -408,6 +410,7 @@ class Scenario:
         freqs = self.get_frequencies(prn, observations)
         if freqs is None:
             return []
+        self._known_freqs[prn] = freqs
         f1, f2 = freqs
 
         mw_signal = tec.melbourne_wubbena((f1, f2), observations)
@@ -431,7 +434,7 @@ class Scenario:
             numpy.abs(
                 numpy.diff(observations["L1C"] / f1 - observations["L2C"] / f2, n=2)
             )
-            > 1e-10
+            > 4e-10
         )[0]
         bkpoints |= set(discontinuities)
         bkpoints |= set(discontinuities + 2)

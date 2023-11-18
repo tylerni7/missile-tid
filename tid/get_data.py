@@ -23,7 +23,7 @@ import xarray
 from laika import AstroDog
 from laika.constants import SECS_IN_DAY
 from laika.dgps import get_station_position
-from laika.downloader import download_cors_station, download_and_cache_file
+from laika.downloader import download_cors_station, download_and_cache_file, DownloadFailed
 from laika.gps_time import GPSTime
 from laika.rinex_file import DownloadError
 
@@ -277,7 +277,10 @@ def _download_korean_stations(
         postdata["obsStHour"] = str(start_hour)
         postdata["obsEdHour"] = str(start_hour)
 
-    post_res = requests.post(json_url, data=postdata, proxies=proxies).text
+    try:
+        post_res = requests.post(json_url, data=postdata, proxies=proxies).text
+    except requests.ConnectionError:
+        raise RetryError
     if not post_res:
         raise DownloadError
     res_dat = json.loads(post_res)
@@ -287,7 +290,10 @@ def _download_korean_stations(
         raise RetryError
 
     key = res_dat["key"]
-    zipstream = requests.get(zip_url % key, proxies=proxies, stream=True)
+    try:
+        zipstream = requests.get(zip_url % key, proxies=proxies, stream=True)
+    except requests.ConnectionError:
+        raise RetryError
     try:
         with zipfile.ZipFile(io.BytesIO(zipstream.content)) as zipdat:
             for zipf in zipdat.filelist:
@@ -672,10 +678,10 @@ def get_sat_info_old_okay(
                 # can't get GLONASS data, whatever
                 return res
 
-            for prn, ephs in dog.nav.items():
-                if not prn.startswith("R"):
+            for prn, eph in dog.cached_nav.items():
+                if not prn.startswith("R") or eph is None:
                     continue
-                res[prn] = ephs[-1].get_sat_info(start_time)
+                res[prn] = eph.get_sat_info(start_time)
     return res
 
 
@@ -709,7 +715,7 @@ def populate_sat_info(
     for tick in range(tick_count + 1):
         tick_info = get_sat_info_old_okay(dog, start_time + util.DATA_RATE * tick)
         for svid, info in tick_info.items():
-            if svid not in satellites:
+            if svid not in satellites or not info:
                 continue
             sat_info[satellites[svid]][tick] = (info[0], info[1])
 
@@ -728,8 +734,9 @@ def populate_sat_info(
             corrected_pos = sat_info[satellites[sat]]["pos"][ticks] - delta_pos
             station_dict[station][sat]["sat_pos"][:] = corrected_pos
 
+    bad_sats = set(sat for _, sat in bad_datas)
+    print("bads:", bad_sats)
     for station, sat in bad_datas:
-        print("bad", station, sat)
         del station_dict[station][sat]
 
 
@@ -856,14 +863,17 @@ def download_and_process(
         if os.path.exists(fname):
             return date, station, fname
 
-    rinex_obs_file = fetch_rinex_for_station(None, date, station, partial=partial)
-    if rinex_obs_file is not None:
-        if os.path.exists(rinex_obs_file + ".nc"):
+    try:
+        rinex_obs_file = fetch_rinex_for_station(None, date, station, partial=partial)
+        if rinex_obs_file is not None:
+            if os.path.exists(rinex_obs_file + ".nc"):
+                return date, station, rinex_obs_file + ".nc"
+            rinex = georinex.load(rinex_obs_file, interval=30, use=["G", "R"], fast=False)
+            rinex["time"] = rinex.time.astype(numpy.datetime64)
+            rinex.to_netcdf(rinex_obs_file + ".nc")
             return date, station, rinex_obs_file + ".nc"
-        rinex = georinex.load(rinex_obs_file, interval=30, use=["G", "R"], fast=False)
-        rinex["time"] = rinex.time.astype(numpy.datetime64)
-        rinex.to_netcdf(rinex_obs_file + ".nc")
-        return date, station, rinex_obs_file + ".nc"
+    except DownloadFailed:
+        pass
     return date, station, None
 
 
